@@ -4,7 +4,7 @@
 
 @layer base {
   :root {
-    /* GIAO DIỆN SÁNG (LIGHT MODE) - Giữ nguyên */
+    /* LIGHT MODE */
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
@@ -28,37 +28,23 @@
   }
 
   .dark {
-    /* --- ĐÂY LÀ PHẦN ĐÃ SỬA MÀU --- */
-    
-    /* 1. Nền chính: Đổi thành màu #111827 (Giống Sidebar) */
-    --background: 221.2 39% 11%; 
-    
-    /* 2. Chữ: Màu trắng xám nhẹ cho đỡ chói */
+    /* DARK MODE - Midnight Blue Theme */
+    --background: 221.2 39% 11%;  /* Màu nền xanh đen */
     --foreground: 210 40% 98%;
-
-    /* 3. Nền Card: Sáng hơn nền chính một chút (#1f2937) để nổi bật */
-    --card: 217.2 32.6% 17.5%;
+    --card: 217.2 32.6% 17.5%;    /* Màu card sáng hơn nền chút */
     --card-foreground: 210 40% 98%;
-
-    /* 4. Các thành phần khác chỉnh theo tông Xám xanh */
     --popover: 222.2 84% 4.9%;
     --popover-foreground: 210 40% 98%;
-
     --primary: 210 40% 98%;
     --primary-foreground: 222.2 47.4% 11.2%;
-
     --secondary: 217.2 32.6% 17.5%;
     --secondary-foreground: 210 40% 98%;
-
     --muted: 217.2 32.6% 17.5%;
     --muted-foreground: 215 20.2% 65.1%;
-
     --accent: 217.2 32.6% 17.5%;
     --accent-foreground: 210 40% 98%;
-
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 210 40% 98%;
-
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
@@ -66,11 +52,6 @@
 }
 
 @layer base {
-  * {
-    border-color: hsl(var(--border));
-  }
-  body {
-    background-color: hsl(var(--background));
-    color: hsl(var(--foreground));
-  }
+  * { border-color: hsl(var(--border)); }
+  body { background-color: hsl(var(--background)); color: hsl(var(--foreground)); }
 }

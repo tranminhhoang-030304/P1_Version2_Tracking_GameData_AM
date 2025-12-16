@@ -2,38 +2,30 @@
 
 import { useState, useEffect } from "react"
 import { Sidebar } from "@/components/sidebar"
-import { Save, Plus, Trash2, Package } from "lucide-react"
+import { Save, Plus, Trash2, Package, Server, Settings } from "lucide-react"
 
-// Dữ liệu mặc định (Chỉ dùng khi chưa có gì trong kho)
+// Dữ liệu mặc định
 const defaultItems = [
   { id: 1, key: "XP_BOOST_2X", name: "Double XP (1h)", price: 50 },
   { id: 2, key: "LIFE_POTION", name: "Extra Life Potion", price: 120 },
   { id: 3, key: "SHIELD_MAX", name: "Iron Shield", price: 300 },
-  { id: 4, key: "SPD_BOOTS", name: "Speed Boots", price: 250 },
-  { id: 5, key: "MAGNET_X", name: "Coin Magnet", price: 150 },
-  { id: 6, key: "REVIVE_SCROLL", name: "Revive Scroll", price: 500 },
 ]
 
 export default function SettingsPage() {
-  const [items, setItems] = useState<any[]>([]) // Bắt đầu bằng rỗng để tránh lỗi Hydration
-  const [isLoaded, setIsLoaded] = useState(false) // Cờ kiểm tra đã load xong chưa
+  const [items, setItems] = useState<any[]>([])
+  const [isLoaded, setIsLoaded] = useState(false)
 
-  // 1. KHI MỞ TRANG: Load dữ liệu từ LocalStorage
+  // Load dữ liệu từ LocalStorage
   useEffect(() => {
     const savedItems = localStorage.getItem("gameItems")
-    if (savedItems) {
-      setItems(JSON.parse(savedItems))
-    } else {
-      setItems(defaultItems) // Nếu chưa có thì lấy mặc định
-    }
+    if (savedItems) setItems(JSON.parse(savedItems))
+    else setItems(defaultItems)
     setIsLoaded(true)
   }, [])
 
-  // 2. KHI DỮ LIỆU THAY ĐỔI: Lưu ngược lại vào LocalStorage
+  // Lưu dữ liệu khi thay đổi
   useEffect(() => {
-    if (isLoaded) { // Chỉ lưu khi đã load xong dữ liệu ban đầu
-      localStorage.setItem("gameItems", JSON.stringify(items))
-    }
+    if (isLoaded) localStorage.setItem("gameItems", JSON.stringify(items))
   }, [items, isLoaded])
   
   // State form nhập liệu
@@ -44,29 +36,12 @@ export default function SettingsPage() {
   const [isAdding, setIsAdding] = useState(false)
 
   const handleAddItem = () => {
-    if (!newItemId || !newItemKey || !newItemName || !newItemPrice) {
-      return alert("Vui lòng nhập đầy đủ thông tin (ID, Key, Tên, Giá)!")
-    }
-
-    if (items.some((item: any) => item.id === Number(newItemId))) {
-      return alert("ID này đã tồn tại, vui lòng chọn ID khác!")
-    }
+    if (!newItemId || !newItemKey || !newItemName || !newItemPrice) return alert("Vui lòng nhập đủ thông tin!")
+    if (items.some((item: any) => item.id === Number(newItemId))) return alert("ID này đã tồn tại!")
     
-    const newItem = {
-      id: Number(newItemId),
-      key: newItemKey,
-      name: newItemName,
-      price: Number(newItemPrice)
-    }
-
-    setItems([...items, newItem]) // Thêm vào danh sách (useEffect sẽ tự động lưu)
+    setItems([...items, { id: Number(newItemId), key: newItemKey, name: newItemName, price: Number(newItemPrice) }])
     
-    // Reset form
-    setNewItemId("")
-    setNewItemKey("")
-    setNewItemName("")
-    setNewItemPrice("")
-    setIsAdding(false) 
+    setNewItemId(""); setNewItemKey(""); setNewItemName(""); setNewItemPrice(""); setIsAdding(false) 
   }
 
   const handleDelete = (id: number) => {
@@ -75,8 +50,7 @@ export default function SettingsPage() {
     }
   }
 
-  // Nếu chưa load xong thì hiện màn hình chờ (tránh giật giao diện)
-  if (!isLoaded) return <div className="min-h-screen bg-background text-foreground flex"><Sidebar /><div className="p-8">Loading settings...</div></div>
+  if (!isLoaded) return null
 
   return (
     <div className="min-h-screen bg-background text-foreground flex">
@@ -84,6 +58,7 @@ export default function SettingsPage() {
       <main className="flex-1 pl-64 transition-all duration-300">
         <div className="p-8 space-y-8">
           
+          {/* Header */}
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-primary neon-text-cyan">
               Settings
@@ -93,31 +68,47 @@ export default function SettingsPage() {
             </p>
           </div>
 
-          {/* System Config Section */}
+          {/* --- PHẦN 1: SYSTEM CONFIGURATION (Đã thêm lại) --- */}
           <div className="rounded-xl border bg-card text-card-foreground shadow p-6 space-y-6">
             <h2 className="text-lg font-semibold flex items-center">
+               <Server className="mr-2 h-5 w-5 text-blue-500" />
                System Configuration
             </h2>
+            
             <div className="grid gap-6 md:grid-cols-2">
               <div className="space-y-2">
                 <label className="text-sm font-medium">Oracle IP Address</label>
-                <input type="text" defaultValue="192.168.1.100" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                <input 
+                  type="text" 
+                  defaultValue="192.168.1.100" 
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Oracle Port</label>
-                <input type="text" defaultValue="1521" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                <input 
+                  type="text" 
+                  defaultValue="1521" 
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
               </div>
               <div className="space-y-2 md:col-span-2">
                 <label className="text-sm font-medium">ETL Schedule (Cron)</label>
-                <input type="text" defaultValue="0 * * * *" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                <input 
+                  type="text" 
+                  defaultValue="0 * * * *" 
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+                <p className="text-xs text-muted-foreground">Current: Runs every hour at minute 0</p>
               </div>
             </div>
-            <button className="inline-flex items-center justify-center rounded-md text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2">
+
+            <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none ring-offset-background bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2">
               <Save className="mr-2 h-4 w-4" /> Save Configuration
             </button>
           </div>
 
-          {/* Game Items Section */}
+          {/* --- PHẦN 2: GAME ITEMS MANAGER --- */}
           <div className="rounded-xl border bg-card text-card-foreground shadow p-6">
             <div className="flex items-center justify-between mb-6">
               <div>
@@ -127,11 +118,15 @@ export default function SettingsPage() {
                 </h2>
                 <p className="text-sm text-muted-foreground">Danh sách vật phẩm đang bán trong Shop</p>
               </div>
-              <button onClick={() => setIsAdding(!isAdding)} className="inline-flex items-center justify-center rounded-md text-sm font-medium bg-green-600 text-white hover:bg-green-700 h-9 px-4 py-2">
+              <button 
+                onClick={() => setIsAdding(!isAdding)}
+                className="inline-flex items-center justify-center rounded-md text-sm font-medium bg-green-600 text-white hover:bg-green-700 h-9 px-4 py-2"
+              >
                 <Plus className="mr-2 h-4 w-4" /> Add Item
               </button>
             </div>
 
+            {/* Form thêm mới */}
             {isAdding && (
               <div className="mb-6 p-4 border rounded-lg bg-muted/30 animate-in fade-in slide-in-from-top-2">
                 <div className="grid gap-4 md:grid-cols-5 items-end">
@@ -156,14 +151,15 @@ export default function SettingsPage() {
               </div>
             )}
 
+            {/* Bảng dữ liệu */}
             <div className="relative w-full overflow-auto border rounded-lg">
               <table className="w-full caption-bottom text-sm text-left">
                 <thead className="bg-muted/50 [&_tr]:border-b">
                   <tr className="border-b transition-colors">
                     <th className="h-10 px-4 align-middle font-medium text-muted-foreground">ID</th>
                     <th className="h-10 px-4 align-middle font-medium text-muted-foreground">Key</th>
-                    <th className="h-10 px-4 align-middle font-medium text-muted-foreground">Tên</th>
-                    <th className="h-10 px-4 align-middle font-medium text-muted-foreground">Giá</th>
+                    <th className="h-10 px-4 align-middle font-medium text-muted-foreground">Tên hiển thị</th>
+                    <th className="h-10 px-4 align-middle font-medium text-muted-foreground">Giá (Coin)</th>
                     <th className="h-10 px-4 align-middle font-medium text-muted-foreground text-right">Thao tác</th>
                   </tr>
                 </thead>
@@ -180,7 +176,7 @@ export default function SettingsPage() {
                     </tr>
                   ))}
                   {items.length === 0 && (
-                     <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">Chưa có dữ liệu.</td></tr>
+                    <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">Chưa có dữ liệu.</td></tr>
                   )}
                 </tbody>
               </table>

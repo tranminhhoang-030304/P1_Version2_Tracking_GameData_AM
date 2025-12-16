@@ -1,132 +1,79 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from "recharts"
-import { Skeleton } from "@/components/ui/skeleton"
-import { ApiErrorAlert } from "@/components/api-error-alert"
+import { Bar, BarChart, Line, ComposedChart, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts"
 
-interface ChartDataPoint {
-  level: string
-  revenue: number
-  failRate: number
+// Định nghĩa kiểu dữ liệu cho biểu đồ
+interface RevenueChartProps {
+  data: any[] 
 }
 
-export function RevenueChart() {
-  const [data, setData] = useState<ChartDataPoint[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true)
-        setError(null)
-        
-        // Fetch items by level
-        const itemsRes = await fetch('/api/analytics/items-by-level')
-        if (!itemsRes.ok) throw new Error('Failed to fetch items by level')
-        const items = await itemsRes.json()
-        
-        // Transform data for chart - use count as a proxy for fail rate
-        const chartData = items.map((item: any) => {
-          // Calculate fail rate based on available data
-          const failRate = item.count > 0 ? Math.min((item.count % 100), 60) : 0
-          return {
-            level: `Level ${item.level}`,
-            revenue: item.total_revenue || 0,
-            failRate: failRate,
-          }
-        })
-        
-        setData(chartData.length > 0 ? chartData : fallbackData)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load chart data')
-        // Use fallback data
-        setData(fallbackData)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    const fallbackData: ChartDataPoint[] = [
-      { level: "Level 1", revenue: 12400, failRate: 5 },
-      { level: "Level 2", revenue: 18200, failRate: 8 },
-      { level: "Level 3", revenue: 24800, failRate: 12 },
-      { level: "Level 4", revenue: 31200, failRate: 18 },
-      { level: "Level 5", revenue: 28600, failRate: 25 },
-      { level: "Level 6", revenue: 35400, failRate: 32 },
-      { level: "Level 7", revenue: 42100, failRate: 38 },
-      { level: "Level 8", revenue: 38900, failRate: 45 },
-      { level: "Level 9", revenue: 45200, failRate: 52 },
-      { level: "Level 10", revenue: 52800, failRate: 58 },
-    ]
-
-    fetchData()
-  }, [])
+export function RevenueChart({ data }: RevenueChartProps) {
+  // Nếu không có dữ liệu thì hiện thông báo
+  if (!data || data.length === 0) {
+    return <div className="h-[350px] w-full flex items-center justify-center text-muted-foreground">No data available</div>
+  }
 
   return (
-    <Card className="border-border bg-card">
-      <CardHeader>
-        <CardTitle className="text-foreground">Revenue vs Fail Rate by Level</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {error && <ApiErrorAlert title="Data Load Error" message={error} />}
-        {loading ? (
-          <Skeleton className="h-[350px] w-full" />
-        ) : (
-          <ResponsiveContainer width="100%" height={350}>
-            <ComposedChart data={data}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-              <XAxis
-                dataKey="level"
-                tick={{ fill: "#888", fontSize: 12 }}
-                axisLine={{ stroke: "rgba(255,255,255,0.2)" }}
-              />
-              <YAxis
-                yAxisId="left"
-                tick={{ fill: "#888", fontSize: 12 }}
-                axisLine={{ stroke: "rgba(255,255,255,0.2)" }}
-                tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
-              />
-              <YAxis
-                yAxisId="right"
-                orientation="right"
-                tick={{ fill: "#888", fontSize: 12 }}
-                axisLine={{ stroke: "rgba(255,255,255,0.2)" }}
-                tickFormatter={(value) => `${value}%`}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "rgba(20, 20, 35, 0.95)",
-                  border: "1px solid rgba(0, 255, 255, 0.3)",
-                  borderRadius: "8px",
-                  color: "#fff",
-                }}
-                formatter={(value: number, name: string) => {
-                  if (name === "revenue") return [`$${value.toLocaleString()}`, "Revenue"]
-                  return [`${value}%`, "Fail Rate"]
-                }}
-              />
-              <Legend
-                wrapperStyle={{ paddingTop: "20px" }}
-                formatter={(value) => (
-                  <span style={{ color: "#888" }}>{value === "revenue" ? "Revenue" : "Fail Rate"}</span>
-                )}
-              />
-              <Bar yAxisId="left" dataKey="revenue" fill="rgba(0, 255, 255, 0.6)" radius={[4, 4, 0, 0]} />
-              <Line
-                yAxisId="right"
-                type="monotone"
-                dataKey="failRate"
-                stroke="#ff00ff"
-                strokeWidth={3}
-                dot={{ fill: "#ff00ff", strokeWidth: 2 }}
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
-        )}
-      </CardContent>
-    </Card>
+    <ResponsiveContainer width="100%" height={350}>
+      <ComposedChart data={data}>
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" opacity={0.4} />
+        
+        <XAxis
+          dataKey="name"
+          stroke="#888888"
+          fontSize={12}
+          tickLine={false}
+          axisLine={false}
+          tick={{ fill: 'hsl(var(--muted-foreground))' }}
+        />
+        
+        <YAxis
+          yAxisId="left"
+          stroke="#888888"
+          fontSize={12}
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={(value) => `$${value}`}
+          tick={{ fill: 'hsl(var(--muted-foreground))' }}
+        />
+        
+        <YAxis
+          yAxisId="right"
+          orientation="right"
+          stroke="#888888"
+          fontSize={12}
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={(value) => `${value}%`}
+          tick={{ fill: 'hsl(var(--muted-foreground))' }}
+        />
+        
+        <Tooltip
+          contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
+          itemStyle={{ color: 'hsl(var(--foreground))' }}
+        />
+
+        {/* Cột Revenue (Màu Xanh) */}
+        <Bar 
+          yAxisId="left" 
+          dataKey="total" 
+          fill="#0ea5e9" // Màu xanh dương sáng
+          radius={[4, 4, 0, 0]} 
+          name="Revenue" 
+          barSize={40}
+        />
+
+        {/* Đường Fail Rate (Màu Hồng) */}
+        <Line 
+          yAxisId="right" 
+          type="monotone" 
+          dataKey="failRate" 
+          stroke="#ec4899" // Màu hồng
+          strokeWidth={2} 
+          dot={{ r: 4, fill: "#ec4899" }} 
+          name="Fail Rate" 
+        />
+      </ComposedChart>
+    </ResponsiveContainer>
   )
 }
