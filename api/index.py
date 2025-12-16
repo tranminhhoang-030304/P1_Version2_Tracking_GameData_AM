@@ -7,11 +7,20 @@ from datetime import datetime
 import random
 import os
 
-# --- SỬA LỖI 1: Dùng thư mục /tmp để chạy được trên Vercel ---
-# Trên Vercel, chỉ thư mục /tmp là được phép ghi file
-DB_FILE = "/tmp/game_data.db"
+# --- CẤU HÌNH THÔNG MINH (Smart Config) ---
+# Kiểm tra xem có đang chạy trên Vercel không
+IS_VERCEL = os.environ.get('VERCEL') == '1'
+
+if IS_VERCEL:
+    # Trên Vercel: Phải dùng /tmp mới ghi được file
+    DB_FILE = "/tmp/game_data.db"
+else:
+    # Trên máy Windows: Dùng thư mục hiện tại (.)
+    DB_FILE = "./game_data.db"
+
 DATABASE_URL = f"sqlite:///{DB_FILE}"
 
+# check_same_thread=False cần thiết cho SQLite
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -41,7 +50,7 @@ class LevelSessionFact(Base):
     total_coin_spent = Column(Integer)
     event_timestamp = Column(DateTime)
 
-# Tạo bảng (Sẽ tạo lại mỗi khi Vercel khởi động vì nằm trong /tmp)
+# Tạo bảng (Chỉ tạo nếu chưa có)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
@@ -61,14 +70,13 @@ def get_db():
     finally:
         db.close()
 
-# --- HÀM TẠO DATA GIẢ (Chạy mỗi lần khởi động) ---
+# --- HÀM TẠO DATA GIẢ ---
 def seed_data_if_empty():
     db = SessionLocal()
-    # Luôn tạo lại dữ liệu vì /tmp sẽ bị xóa sau một thời gian
+    # Nếu chưa có dữ liệu thì tạo
     if db.query(LevelSessionFact).count() == 0:
-        print("🌱 Đang tạo lại dữ liệu giả trên Vercel...")
+        print(f"🌱 Đang tạo dữ liệu giả tại {DB_FILE}...")
         
-        # 1. Tạo Booster
         boosters = [
             BoosterConfig(booster_key="hammer", booster_name="Búa Thần", coin_cost=100),
             BoosterConfig(booster_key="bomb", booster_name="Bom Nổ", coin_cost=150),
@@ -80,12 +88,10 @@ def seed_data_if_empty():
             if not existing:
                 db.add(b)
         
-        # 2. Tạo Logs
-        db.add(JobLog(status="SUCCESS", rows_imported=500, message="Vercel Deploy Success", start_time=datetime.now()))
+        db.add(JobLog(status="SUCCESS", rows_imported=500, message="System Ready", start_time=datetime.now()))
         
-        # 3. Tạo 200 lượt chơi
         for i in range(200):
-            lvl = random.randint(1, 10) # Level 1-10
+            lvl = random.randint(1, 10)
             is_fail = random.choice([True, False, False])
             status = "FAIL" if is_fail else "SUCCESS"
             db.add(LevelSessionFact(
@@ -100,13 +106,13 @@ def seed_data_if_empty():
 
 seed_data_if_empty()
 
-# --- API ENDPOINTS (Đã sửa tên cho khớp Frontend) ---
+# --- API ENDPOINTS ---
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "env": "Vercel"}
+    return {"status": "ok", "env": "Vercel" if IS_VERCEL else "Localhost"}
 
-# SỬA LỖI 2: Đổi tên endpoint từ /level-stats thành /items-by-level
+# Endpoint này khớp với Frontend của bạn
 @app.get("/api/analytics/items-by-level")
 def get_items_by_level(db: Session = Depends(get_db)):
     results = db.query(
@@ -127,7 +133,6 @@ def get_items_by_level(db: Session = Depends(get_db)):
             "revenue": r.revenue or 0, 
             "fail_rate": fail_rate
         })
-    # Sort theo level
     data.sort(key=lambda x: int(x['level'].split()[1]))
     return data
 
