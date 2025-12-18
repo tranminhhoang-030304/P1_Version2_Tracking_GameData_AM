@@ -1,77 +1,86 @@
 "use client"
 
-import { Bar, BarChart, Line, ComposedChart, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts"
+import {
+  ComposedChart,
+  Line,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from "recharts"
 
-// Định nghĩa kiểu dữ liệu cho biểu đồ
 interface RevenueChartProps {
-  data: any[] 
+  data: any[]
 }
 
 export function RevenueChart({ data }: RevenueChartProps) {
-  // Nếu không có dữ liệu thì hiện thông báo
-  if (!data || data.length === 0) {
-    return <div className="h-[350px] w-full flex items-center justify-center text-muted-foreground">No data available</div>
-  }
-
   return (
     <ResponsiveContainer width="100%" height={350}>
       <ComposedChart data={data}>
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" opacity={0.4} />
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#333" />
         
-        <XAxis
-          dataKey="name"
-          stroke="#888888"
-          fontSize={12}
-          tickLine={false}
+        {/* Trục X: Level */}
+        <XAxis 
+          dataKey="name" 
+          stroke="#888888" 
+          fontSize={12} 
+          tickLine={false} 
           axisLine={false}
-          tick={{ fill: 'hsl(var(--muted-foreground))' }}
+          interval={0} // Cố gắng hiện hết các mốc level
+          angle={-45}  // Nghiêng chữ nếu nhiều level quá
+          textAnchor="end"
+          height={60}
         />
         
+        {/* Trục Y Trái: DOANH THU (Tiền) */}
         <YAxis
           yAxisId="left"
           stroke="#888888"
           fontSize={12}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(value) => `$${value}`}
-          tick={{ fill: 'hsl(var(--muted-foreground))' }}
+          tickFormatter={(value) => `${value}`} // Có thể thêm 'k' nếu số quá to
         />
-        
+
+        {/* Trục Y Phải: FAIL RATE (%) */}
         <YAxis
           yAxisId="right"
           orientation="right"
-          stroke="#888888"
+          stroke="#ff4d4f"
           fontSize={12}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(value) => `${value}%`}
-          tick={{ fill: 'hsl(var(--muted-foreground))' }}
+          unit="%"
         />
-        
+
         <Tooltip
-          contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
-          itemStyle={{ color: 'hsl(var(--foreground))' }}
+          contentStyle={{ backgroundColor: "#1f2937", border: "none", borderRadius: "8px" }}
+          itemStyle={{ color: "#fff" }}
         />
+        <Legend />
 
-        {/* Cột Revenue (Màu Xanh) */}
+        {/* Cột Doanh Thu (Màu Xanh Cyan) - Gắn trục Trái */}
         <Bar 
-          yAxisId="left" 
+          yAxisId="left"
           dataKey="total" 
-          fill="#0ea5e9" // Màu xanh dương sáng
+          name="Revenue (Coin)" 
+          fill="#0ea5e9" 
           radius={[4, 4, 0, 0]} 
-          name="Revenue" 
-          barSize={40}
+          barSize={20}
         />
 
-        {/* Đường Fail Rate (Màu Hồng) */}
-        <Line 
-          yAxisId="right" 
-          type="monotone" 
-          dataKey="failRate" 
-          stroke="#ec4899" // Màu hồng
-          strokeWidth={2} 
-          dot={{ r: 4, fill: "#ec4899" }} 
-          name="Fail Rate" 
+        {/* Đường Fail Rate (Màu Đỏ/Hồng) - Gắn trục Phải */}
+        <Line
+          yAxisId="right"
+          type="monotone"
+          dataKey="failRate"
+          name="Fail Rate (%)"
+          stroke="#f43f5e"
+          strokeWidth={2}
+          dot={false} // Bỏ chấm tròn cho đỡ rối mắt
         />
       </ComposedChart>
     </ResponsiveContainer>

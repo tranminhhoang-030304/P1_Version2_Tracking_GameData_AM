@@ -1,7 +1,15 @@
+# Bỏ qua các thư viện nặng
 node_modules/
-.next/
+backend/venv/
 venv/
 __pycache__/
-.env
-.DS_Store
+
+# Bỏ qua dữ liệu tạm và DB local
 *.db
+*.sqlite3
+raw_data/
+
+# Bỏ qua file môi trường hệ thống
+.DS_Store
+.env
+.next/

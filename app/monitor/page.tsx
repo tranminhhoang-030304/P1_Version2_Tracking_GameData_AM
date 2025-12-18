@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react"
 import { Sidebar } from "@/components/sidebar"
 import { Play, Activity, Clock, AlertTriangle, CheckCircle2 } from "lucide-react"
+// 👇 1. IMPORT COMPONENT MỚI
+import RawDataMonitor from "@/components/RawDataMonitor"
 
 export default function MonitorPage() {
   const [logs, setLogs] = useState<any[]>([])
@@ -105,6 +107,7 @@ export default function MonitorPage() {
              </div>
           </div>
 
+          {/* BẢNG LOG CŨ (LOCAL) */}
           <div className="rounded-xl border bg-card text-card-foreground shadow p-6">
              <h3 className="text-lg font-semibold mb-4">ETL Job Logs (Lưu trên máy)</h3>
              <div className="relative w-full overflow-auto">
@@ -137,6 +140,11 @@ export default function MonitorPage() {
                      </tbody>
                  </table>
              </div>
+          </div>
+
+          {/* 👇 2. BẢNG MONITOR MỚI VÀO ĐÂY (TÁCH BIỆT KHỎI BẢNG CŨ) */}
+          <div className="mt-8 pt-8 border-t border-dashed border-gray-700">
+             <RawDataMonitor />
           </div>
 
         </div>
