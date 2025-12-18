@@ -21,8 +21,24 @@ from collections import defaultdict
 # ==========================================
 # 1. CẤU HÌNH DATABASE
 # ==========================================
-DATABASE_URL = "sqlite:///./game_data.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# Lấy biến môi trường DATABASE_URL (Do Render cung cấp)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Nếu không có (tức là đang chạy local), dùng SQLite
+if not DATABASE_URL:
+    DATABASE_URL = "sqlite:///./game_data.db"
+else:
+    # Fix lỗi nhỏ của Render: Nó trả về 'postgres://' nhưng SQLAlchemy cần 'postgresql://'
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Cấu hình engine
+if "sqlite" in DATABASE_URL:
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    # Cấu hình cho PostgreSQL
+    engine = create_engine(DATABASE_URL)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
