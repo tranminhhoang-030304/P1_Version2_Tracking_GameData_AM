@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 
 // --- CONFIG ---
-const API_URL = "http://127.0.0.1:8080"; 
+const API_URL = "https://p1-version2-tracking-gamedata-am.onrender.com/"; 
 const PIE_COLORS_1 = ['#00C49F', '#FFBB28']; 
 const PIE_COLORS_2 = ['#3b82f6', '#ef4444']; 
 
