@@ -216,6 +216,24 @@ function DashboardView({ darkMode, cardClass, textHeadClass }: any) {
 // 2. MONITOR VIEW
 // ====================================================================================
 function MonitorView({ darkMode, cardClass, textHeadClass, logs, setLogs, isRunning, setIsRunning }: any) {
+    
+    const formatToVN = (dateString: string) => {
+    if (!dateString) return 'N/A';
+    // Nếu chuỗi thời gian chưa có chữ Z ở cuối (UTC), thì cộng thêm vào để trình duyệt hiểu đúng
+    const utcString = dateString.endsWith('Z') ? dateString : dateString + 'Z';
+    
+    return new Date(utcString).toLocaleString('vi-VN', {
+        timeZone: 'Asia/Ho_Chi_Minh', // Ép buộc múi giờ VN (GMT+7)
+        hour12: false, // Dùng định dạng 24h (16:00 thay vì 4:00 PM)
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit',
+        hour: '2-digit', 
+        minute: '2-digit',
+        second: '2-digit'
+    });
+};
+
     const [jobHistory, setJobHistory] = useState<any[]>([]);
 
     const fetchHistory = async () => {
@@ -296,7 +314,7 @@ function MonitorView({ darkMode, cardClass, textHeadClass, logs, setLogs, isRunn
                                     </td>
                                     <td className="px-4 py-3 font-bold">{job.rows_processed}</td>
                                     <td className="px-4 py-3 text-xs opacity-80 truncate max-w-[200px]" title={job.message}>{job.message}</td>
-                                    <td className="px-4 py-3 text-slate-500 text-xs">{new Date(job.start_time).toLocaleString()}</td>
+                                    <td className="px-4 py-3 text-slate-500 text-xs font-mono">{formatToVN(job.start_time)}</td>
                                 </tr>
                             ))}
                         </tbody>
