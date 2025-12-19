@@ -118,7 +118,7 @@ export function BoostersTable() {
               <TableRow key={booster.rank} className="border-border">
                 <TableCell className="font-mono text-neon-cyan">#{booster.rank}</TableCell>
                 <TableCell className="text-foreground">{booster.name}</TableCell>
-                <TableCell className="text-right text-foreground">{booster.usage.toLocaleString()}</TableCell>
+                <TableCell className="text-right text-foreground">{(booster.usage || 0).toLocaleString()}</TableCell>
                 <TableCell className="text-right">
                   <Badge
                     variant="outline"
