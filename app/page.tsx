@@ -118,11 +118,55 @@ function DashboardView({ darkMode, cardClass, textHeadClass }: any) {
 
         {/* KPI CARDS */}
         <div className="grid grid-cols-5 gap-4 mb-6">
-          <KpiCard title="Coin Revenue" value={formatCurrency(data?.summary?.total_revenue)} icon={<DollarSign size={16}/>} color="text-yellow-500" cardClass={cardClass} textHead={textHeadClass} />
-          <KpiCard title="Avg Fail Rate" value={`${data?.summary?.avg_fail_rate}%`} icon={<Activity size={16}/>} color="text-red-500" cardClass={cardClass} textHead={textHeadClass}/>
-          <KpiCard title="Active Players" value={data?.summary?.active_players.toLocaleString()} icon={<PlayCircle size={16}/>} color="text-blue-500" cardClass={cardClass} textHead={textHeadClass}/>
-          <KpiCard title="Ads Watched" value={data?.summary?.total_ads.toLocaleString()} icon={<Video size={16}/>} color="text-green-500" cardClass={cardClass} textHead={textHeadClass}/>
-          <KpiCard title="IAP Purchases" value={data?.summary?.total_iap.toLocaleString()} icon={<CreditCard size={16}/>} color="text-purple-500" cardClass={cardClass} textHead={textHeadClass}/>
+          {/* Thẻ 1: Giữ nguyên (Vì hàm formatCurrency đã an toàn) */}
+          <KpiCard 
+            title="Coin Revenue" 
+            value={formatCurrency(data?.summary?.total_revenue)} 
+            icon={<DollarSign size={16}/>} 
+            color="text-yellow-500" 
+            cardClass={cardClass} 
+            textHead={textHeadClass} 
+          />
+          
+          {/* Thẻ 2: Sửa nhẹ thêm || 0 để đỡ hiện chữ 'undefined%' nếu chưa có số liệu */}
+          <KpiCard 
+            title="Avg Fail Rate" 
+            value={`${data?.summary?.avg_fail_rate || 0}%`} 
+            icon={<Activity size={16}/>} 
+            color="text-red-500" 
+            cardClass={cardClass} 
+            textHead={textHeadClass}
+          />
+
+          {/* Thẻ 3: SỬA LỖI (Thêm || 0) */}
+          <KpiCard 
+            title="Active Players" 
+            value={(data?.summary?.active_players || 0).toLocaleString()} 
+            icon={<PlayCircle size={16}/>} 
+            color="text-blue-500" 
+            cardClass={cardClass} 
+            textHead={textHeadClass}
+          />
+
+          {/* Thẻ 4: SỬA LỖI (Thêm || 0) */}
+          <KpiCard 
+            title="Ads Watched" 
+            value={(data?.summary?.total_ads || 0).toLocaleString()} 
+            icon={<Video size={16}/>} 
+            color="text-green-500" 
+            cardClass={cardClass} 
+            textHead={textHeadClass}
+          />
+
+          {/* Thẻ 5: SỬA LỖI (Thêm || 0) */}
+          <KpiCard 
+            title="IAP Purchases" 
+            value={(data?.summary?.total_iap || 0).toLocaleString()} 
+            icon={<CreditCard size={16}/>} 
+            color="text-purple-500" 
+            cardClass={cardClass} 
+            textHead={textHeadClass}
+          />
         </div>
 
         {/* MAIN CHART */}
