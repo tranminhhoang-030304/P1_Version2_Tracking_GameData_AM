@@ -65,7 +65,7 @@ export default function RawDataMonitor() {
               logs.map((log) => (
                 <tr key={log.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3 text-gray-600">
-                    {new Date(log.start_time).toLocaleString('vi-VN')}
+                    {log.start_time ? new Date(log.start_time).toLocaleString('vi-VN') : 'N/A'}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-1 rounded text-xs font-semibold ${

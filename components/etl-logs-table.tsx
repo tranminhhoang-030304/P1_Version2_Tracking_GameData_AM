@@ -113,7 +113,7 @@ export function ETLLogsTable() {
                     {log.status}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-right text-foreground">{log.rowsImported.toLocaleString()}</TableCell>
+                <TableCell className="text-right text-foreground">{(log.rowsImported || 0).toLocaleString()}</TableCell>
                 <TableCell className="text-muted-foreground">{formatToVN(log.time)}</TableCell>
                 <TableCell className="text-right text-foreground">{log.duration}</TableCell>
               </TableRow>
