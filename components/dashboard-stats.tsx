@@ -78,7 +78,7 @@ export function DashboardStats() {
     <div className="mb-8 grid gap-6 md:grid-cols-3">
       <StatsCard
         title="Total Revenue"
-        value={`$${revenue.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+        value={`$${(revenue || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
         change="+12.5% from last month"
         changeType="positive"
         icon={DollarSign}
