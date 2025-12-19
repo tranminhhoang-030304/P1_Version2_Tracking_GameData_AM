@@ -206,11 +206,11 @@ def run_crawler_logic(job_type="MANUAL"):
         params = {"application_id": config.appmetrica_app_id, "date_since": date_since, "date_until": date_until, "fields": "event_name,event_json,event_timestamp"}
         headers = {"Authorization": f"OAuth {config.appmetrica_token}"}
 
-        max_retries = 10
+        max_retries = 60
         response = None
         for attempt in range(max_retries):
             print(f"📡 Kết nối lần {attempt + 1}...")
-            response = requests.get(url, params=params, headers=headers, stream=True, timeout=120)
+            response = requests.get(url, params=params, headers=headers, stream=True, timeout=180)
             if response.status_code == 200:
                 print("✅ Kết nối thành công!")
                 break
