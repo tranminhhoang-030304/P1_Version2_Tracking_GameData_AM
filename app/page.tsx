@@ -1,445 +1,1006 @@
-"use client"
-
+'use client';
 import React, { useState, useEffect } from 'react';
-import { 
-  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  PieChart, Pie, Cell, Legend 
-} from 'recharts';
-import { 
-  LayoutDashboard, Activity, Settings, DollarSign, 
-  PlayCircle, Video, CreditCard, Sun, Moon,
-  Play, Trash2, Save, Plus, RotateCcw, XCircle, CheckCircle, AlertTriangle,
-  Clock // Icon cho Settings mới
+import LevelDetailTab from './components/LevelDetailTab';
+import DataExplorer from './components/DataExplorer';
+import {
+  LayoutDashboard, Settings, Activity, Server,
+  Play, CheckCircle, Save, Plus, BarChart3, List,
+  Calendar, Clock, AlertCircle, X, RotateCcw, FileText, Trash2, StopCircle, RefreshCw,
+  Bot, Zap, FlaskConical, Filter, PieChart as PieIcon, Coins, Gamepad2, Database,
+  ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, TrendingUp, Users
 } from 'lucide-react';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar,
+  PieChart, Pie, Cell, Legend
+} from 'recharts';
 
-// --- CONFIG ---
-const API_URL = "https://p1-version2-tracking-gamedata-am.onrender.com"; 
-const PIE_COLORS_1 = ['#00C49F', '#FFBB28']; 
-const PIE_COLORS_2 = ['#3b82f6', '#ef4444']; 
+// --- TYPE DEFINITIONS ---
+interface AppConfig {
+  id: number;
+  name: string;
+  app_id: string;
+  api_token: string;
+  is_active: boolean;
+  schedule_time?: string;
+  interval_minutes?: number;
+}
 
-// --- FORMAT HELPER ---
-const formatCurrency = (value: number) => {
-  if (value >= 1000000000) return (value / 1000000000).toFixed(2) + 'B';
-  if (value >= 1000000) return (value / 1000000).toFixed(2) + 'M';
-  if (value >= 1000) return (value / 1000).toFixed(1) + 'K';
-  return value?.toLocaleString() || '0';
-};
+interface DashboardData {
+  overview: {
+    cards: { revenue: number; active_users: number; fail_rate_avg: number };
+    chart_main: any[];
+  };
+  detailed: {
+    level_stats: any[];
+    booster_stats: any[];
+    raw_table: any[];
+    event_dictionary: string[];
+  };
+}
 
-// ====================================================================================
-// MAIN APP COMPONENT
-// ====================================================================================
+const API_URL = 'http://127.0.0.1:8080';
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
+
+const StatCard = ({ title, value, icon: Icon, color }: any) => (
+  <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition-shadow">
+    <div className="flex justify-between items-start">
+      <div>
+        <p className="text-slate-500 dark:text-slate-400 text-sm font-medium">{title}</p>
+        <h3 className="text-2xl font-bold text-slate-800 dark:text-white mt-2">{value}</h3>
+      </div>
+      <div className={`p-3 rounded-lg ${color} bg-opacity-10`}>
+        <Icon size={20} className={color.replace('bg-', 'text-')} />
+      </div>
+    </div>
+  </div>
+);
+
+const NavItem = ({ icon: Icon, label, active, onClick }: any) => (
+  <button
+    onClick={onClick}
+    className={`flex items-center gap-3 px-4 py-3 rounded-lg w-full transition-all ${active
+      ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+      : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+      }`}
+  >
+    <Icon size={20} />
+    <span className="font-medium">{label}</span>
+  </button>
+);
+
 export default function GameAnalyticsApp() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'monitor' | 'settings'>('dashboard');
-  const [darkMode, setDarkMode] = useState(true);
-  
-  // STATE TOÀN CỤC CHO LOG MONITOR
-  const [monitorLogs, setMonitorLogs] = useState<string[]>([]);
-  const [isJobRunning, setIsJobRunning] = useState(false);
+  const [activeTab, setActiveTab] = useState('settings');
+  const [apps, setApps] = useState<AppConfig[]>([]);
+  const [selectedApp, setSelectedApp] = useState<AppConfig | null>(null);
+  const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const themeClass = darkMode ? "bg-[#0f1219] text-slate-300" : "bg-slate-50 text-slate-800";
-  const cardClass = darkMode ? "bg-[#1a1d26] border-slate-800" : "bg-white border-slate-200 shadow-sm";
-  const textHeadClass = darkMode ? "text-white" : "text-slate-900";
+  // Load danh sách App
+  const fetchApps = () => {
+    fetch(`${API_URL}/apps`)
+      .then(res => res.json())
+      .then(data => {
+        setApps(data);
+        if (selectedApp) {
+          const updatedCurrentApp = data.find((a: AppConfig) => a.id === selectedApp.id);
+          if (updatedCurrentApp) setSelectedApp(updatedCurrentApp);
+        } else if (data.length > 0) {
+          setSelectedApp(data[0]);
+        }
+      })
+      .catch(err => console.error("Load apps error:", err));
+  };
+
+  useEffect(() => { fetchApps(); }, []);
+
+  useEffect(() => {
+    if (activeTab === 'dashboard' && selectedApp) {
+      setLoading(true);
+      fetch(`${API_URL}/dashboard/${selectedApp.id}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) setDashboardData(data);
+          else setDashboardData(null);
+        })
+        .catch(err => setDashboardData(null))
+        .finally(() => setLoading(false));
+    }
+  }, [activeTab, selectedApp]);
 
   return (
-    <div className={`flex min-h-screen font-sans transition-colors duration-300 ${themeClass}`}>
-      
+    <div className="flex h-screen bg-slate-50 dark:bg-slate-900 font-sans text-slate-800 dark:text-slate-200">
       {/* SIDEBAR */}
-      <aside className={`w-64 border-r flex flex-col p-4 transition-colors duration-300 ${darkMode ? "bg-[#11141d] border-slate-800" : "bg-white border-slate-200"}`}>
-        <div className="flex items-center gap-2 mb-2 px-2">
-          <div className="text-blue-600 font-bold text-2xl">GameStats</div>
+      <aside className="w-64 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-10 shrink-0">
+        <div className="p-6 h-full flex flex-col">
+          <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 mb-8">
+            <Activity size={28} strokeWidth={2.5} />
+            <span className="text-xl font-bold tracking-tight">GameStats</span>
+          </div>
+
+          <div className="mb-6 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-700">
+            <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2">Active Project</p>
+            <div className="font-medium text-slate-700 dark:text-slate-200 truncate" title={selectedApp?.name}>
+              {selectedApp ? selectedApp.name : 'Select a Game'}
+            </div>
+          </div>
+
+          <nav className="space-y-2 flex-1">
+            <NavItem icon={Settings} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+            <NavItem icon={Server} label="Monitor" active={activeTab === 'monitor'} onClick={() => setActiveTab('monitor')} />
+            <NavItem icon={LayoutDashboard} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
+            <NavItem icon={Database} label="Data Explorer" active={activeTab === 'data'} onClick={() => setActiveTab('data')} />
+          </nav>
+
+          <div className="text-xs text-center text-slate-400 mt-4">v1.5.0 Analytics Config</div>
         </div>
-        <div className="px-2 mb-8">
-            <button onClick={() => setDarkMode(!darkMode)} className={`flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-full border transition-all ${darkMode ? "border-slate-700 text-slate-400 hover:text-white" : "border-slate-300 text-slate-600 hover:text-black"}`}>
-                {darkMode ? <><Sun size={14} /> Light Mode</> : <><Moon size={14} /> Dark Mode</>}
-            </button>
-        </div>
-        <nav className="flex flex-col gap-2">
-          <NavItem icon={<LayoutDashboard size={18}/>} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} darkMode={darkMode}/>
-          <NavItem icon={<Activity size={18}/>} label="Monitor" active={activeTab === 'monitor'} onClick={() => setActiveTab('monitor')} darkMode={darkMode}/>
-          <NavItem icon={<Settings size={18}/>} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} darkMode={darkMode}/>
-        </nav>
       </aside>
 
-      {/* MAIN AREA */}
-      <main className="flex-1 p-8 overflow-y-auto h-screen custom-scrollbar">
-        {activeTab === 'dashboard' && <DashboardView darkMode={darkMode} cardClass={cardClass} textHeadClass={textHeadClass} />}
-        
-        {activeTab === 'monitor' && (
-            <MonitorView 
-                darkMode={darkMode} cardClass={cardClass} textHeadClass={textHeadClass}
-                logs={monitorLogs} setLogs={setMonitorLogs}
-                isRunning={isJobRunning} setIsRunning={setIsJobRunning}
-            />
+      {/* MAIN CONTENT */}
+      <main className="flex-1 overflow-y-auto p-8 relative">
+        {activeTab === 'settings' && (
+          <SettingsView
+            apps={apps}
+            selectedApp={selectedApp}
+            onSelectApp={setSelectedApp}
+            onRefresh={fetchApps}
+          />
         )}
-        
-        {activeTab === 'settings' && <SettingsView darkMode={darkMode} cardClass={cardClass} textHeadClass={textHeadClass} />}
+
+        {activeTab === 'monitor' && (
+          <MonitorView selectedApp={selectedApp} />
+        )}
+
+        {activeTab === 'dashboard' && (
+          dashboardData ? (
+            <DashboardView data={dashboardData} loading={loading} appId={selectedApp!.id} />
+          ) : (
+            <div className="flex h-full items-center justify-center text-slate-400 flex-col gap-4">
+              <BarChart3 size={48} className="opacity-20" />
+              {selectedApp ? "No data available. Run ETL in Monitor tab." : "Please select a game in Settings first."}
+            </div>
+          )
+        )}
+
+        {activeTab === 'data' && (
+          selectedApp ? (
+            <DataExplorer appId={selectedApp.id} />
+          ) : (
+            <div className="flex h-full items-center justify-center text-slate-400 flex-col gap-4">
+              <Database size={48} className="opacity-20" />
+              Please select a game first.
+            </div>
+          )
+        )}
       </main>
     </div>
   );
 }
 
-// ====================================================================================
-// 1. DASHBOARD VIEW
-// ====================================================================================
-function DashboardView({ darkMode, cardClass, textHeadClass }: any) {
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+// --- VIEW: SETTINGS (UPDATED) ---
+function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [showAnalyticsConfig, setShowAnalyticsConfig] = useState(false); // Modal state
 
-  const fetchDashboardData = async (manual = false) => {
-    if (manual && !confirm("Làm mới dữ liệu Dashboard ngay lập tức?")) return;
+  // Form chính (Giữ nguyên logic cũ)
+  const [formData, setFormData] = useState({
+    name: '', app_id: '', api_token: '',
+    schedule_time: '12:00', interval_minutes: 60, is_active: true
+  });
+
+  // Form Analytics (Mới thêm)
+  const [analyticsData, setAnalyticsData] = useState<any>({
+    events: { level_start: '', level_win: '', level_fail: '' },
+    boosters: []
+  });
+  const [previewData, setPreviewData] = useState<any>(null);
+
+  // Effect: Sync dữ liệu khi chọn App
+  useEffect(() => {
+    if (isAdding) {
+      setFormData({ name: '', app_id: '', api_token: '', schedule_time: '00:00', interval_minutes: 60, is_active: true });
+    } else if (selectedApp) {
+      setFormData({
+        name: selectedApp.name,
+        app_id: selectedApp.app_id || '',
+        api_token: selectedApp.api_token || '',
+        schedule_time: selectedApp.schedule_time || '12:00',
+        interval_minutes: selectedApp.interval_minutes || 60,
+        is_active: selectedApp.is_active
+      });
+    }
+  }, [selectedApp, isAdding]);
+
+  // --- THÊM EFFECT MỚI: Load Preview Data khi chọn App ---
+  useEffect(() => {
+    if (selectedApp?.id) {
+      fetch(`${API_URL}/apps/${selectedApp.id}/analytics-config`)
+        .then(res => {
+          if (res.ok) return res.json();
+          return null;
+        })
+        .then(data => {
+          // Kiểm tra data có hợp lệ không trước khi set
+          if (data && (data.events || (data.boosters && data.boosters.length > 0))) {
+            setPreviewData(data);
+          } else {
+            setPreviewData(null);
+          }
+        })
+        .catch(() => setPreviewData(null));
+    } else {
+      setPreviewData(null);
+    }
+  }, [selectedApp]);
+
+  // --- LOGIC MỚI: ANALYTICS CONFIG ---
+
+  // Load Config khi mở modal
+  const handleOpenAnalytics = async () => {
+    if (!selectedApp) return;
     try {
-      setLoading(true);
-      const res = await fetch(`${API_URL}/dashboard/1`);
-      if (res.ok) setData(await res.json());
-    } catch (err) { console.error(err); } 
-    finally { setLoading(false); }
+      const res = await fetch(`${API_URL}/apps/${selectedApp.id}/analytics-config`);
+      const data = await res.json();
+      // Nếu server trả về rỗng hoặc lỗi, dùng default
+      setAnalyticsData(data.events ? data : {
+        events: { level_start: '', level_win: '', level_fail: '' },
+        boosters: []
+      });
+      setShowAnalyticsConfig(true);
+    } catch (e) {
+      // Fallback nếu chưa có config
+      setAnalyticsData({
+        events: { level_start: '', level_win: '', level_fail: '' },
+        boosters: []
+      });
+      setShowAnalyticsConfig(true);
+    }
+  }
+
+  const handleSaveAnalytics = async () => {
+    if (!selectedApp) return;
+    try {
+      await fetch(`${API_URL}/apps/${selectedApp.id}/analytics-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(analyticsData)
+      });
+      alert("Analytics Configuration Saved!");
+      setShowAnalyticsConfig(false);
+
+      onRefresh();
+    } catch (e) { alert("Error saving config"); }
+  }
+
+  // Quản lý list booster
+  const addBooster = () => {
+    setAnalyticsData({
+      ...analyticsData,
+      boosters: [...(analyticsData.boosters || []), { event_name: '', display_name: '', coin_cost: 0 }]
+    });
   };
 
-  useEffect(() => {
-    fetchDashboardData();
-    const interval = setInterval(() => fetchDashboardData(false), 30000);
-    return () => clearInterval(interval);
-  }, []);
+  const removeBooster = (index: number) => {
+    const newBoosters = [...analyticsData.boosters];
+    newBoosters.splice(index, 1);
+    setAnalyticsData({ ...analyticsData, boosters: newBoosters });
+  }
 
-  const chartData = data?.chart_data || [];
-  const sortedByRevenue = [...chartData].sort((a: any, b: any) => b.total - a.total).slice(0, 8);
-  
-  const pieData1 = [{ name: 'Ads', value: data?.summary?.total_ads || 0 }, { name: 'IAP', value: data?.summary?.total_iap || 0 }].filter(i=>i.value>0);
-  const pieData2 = [{ name: 'Win', value: data?.summary?.total_wins || 0 }, { name: 'Fail', value: data?.summary?.total_fails || 0 }].filter(i=>i.value>0);
+  const updateBooster = (index: number, field: string, value: any) => {
+    const newBoosters = [...analyticsData.boosters];
+    newBoosters[index] = { ...newBoosters[index], [field]: value };
+    setAnalyticsData({ ...analyticsData, boosters: newBoosters });
+  }
 
-  if (loading && !data) return <div className="p-10 text-slate-500">Loading Dashboard...</div>;
+  // --- LOGIC CŨ: MAIN APP SAVE/DELETE ---
+
+  const handleSubmit = async () => {
+    const url = isAdding ? `${API_URL}/apps` : `${API_URL}/apps/${selectedApp.id}`;
+    const method = isAdding ? 'POST' : 'PUT';
+    try {
+      const res = await fetch(url, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData)
+      });
+      if (res.ok) {
+        alert(isAdding ? "Created New Game!" : "Saved Changes!");
+        setIsAdding(false);
+        onRefresh();
+      } else {
+        const err = await res.json();
+        alert("Failed: " + err.error);
+      }
+    } catch (e) { alert("Error connecting to server!"); }
+  };
+
+  const handleDelete = async (e: any, appToDelete: any) => {
+    e.stopPropagation();
+    if (!confirm(`Delete ${appToDelete.name}?`)) return;
+    try {
+      const res = await fetch(`${API_URL}/apps/${appToDelete.id}`, { method: 'DELETE' });
+      if (res.ok) {
+        if (selectedApp?.id === appToDelete.id) onSelectApp(null);
+        onRefresh();
+      }
+    } catch (err) { alert("Error!"); }
+  };
 
   return (
-    <div className="animate-fade-in pb-10">
-        <header className="flex justify-between items-center mb-8">
-          <div><h1 className={`text-2xl font-bold ${textHeadClass}`}>Game Analytics Dashboard</h1><p className="text-sm text-slate-500 mt-1">Real-time Data Visualization</p></div>
-          <button onClick={() => fetchDashboardData(true)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg shadow-lg shadow-blue-500/30 transition-all flex items-center gap-2"><RotateCcw size={16}/> Refresh Data</button>
-        </header>
+    <div className="space-y-8 animate-in fade-in zoom-in duration-300 relative">
+      {/* 1. LIST APPS GRID */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {apps.map((app: any) => (
+          <div
+            key={app.id}
+            onClick={() => { setIsAdding(false); onSelectApp(app); }}
+            className={`group cursor-pointer p-4 rounded-xl border-2 transition-all relative flex items-center justify-between ${!isAdding && selectedApp && selectedApp.id === app.id
+              ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'
+              }`}
+          >
+            <div className="flex-1 min-w-0 pr-2">
+              <h3 className="font-bold truncate" title={app.name}>{app.name}</h3>
+            </div>
 
-        {/* KPI CARDS */}
-        <div className="grid grid-cols-5 gap-4 mb-6">
-          {/* Thẻ 1: Giữ nguyên (Vì hàm formatCurrency đã an toàn) */}
-          <KpiCard 
-            title="Coin Revenue" 
-            value={formatCurrency(data?.summary?.total_revenue)} 
-            icon={<DollarSign size={16}/>} 
-            color="text-yellow-500" 
-            cardClass={cardClass} 
-            textHead={textHeadClass} 
-          />
-          
-          {/* Thẻ 2: Sửa nhẹ thêm || 0 để đỡ hiện chữ 'undefined%' nếu chưa có số liệu */}
-          <KpiCard 
-            title="Avg Fail Rate" 
-            value={`${data?.summary?.avg_fail_rate || 0}%`} 
-            icon={<Activity size={16}/>} 
-            color="text-red-500" 
-            cardClass={cardClass} 
-            textHead={textHeadClass}
-          />
+            <div className="flex items-center gap-2 shrink-0">
+              {(!isAdding && selectedApp?.id === app.id) && (
+                <CheckCircle size={20} className="text-blue-500" />
+              )}
+              <button
+                onClick={(e) => handleDelete(e, app)}
+                className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-100 rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <Trash2 size={18} />
+              </button>
+            </div>
+          </div>
+        ))}
 
-          {/* Thẻ 3: SỬA LỖI (Thêm || 0) */}
-          <KpiCard 
-            title="Active Players" 
-            value={(data?.summary?.active_players || 0).toLocaleString()} 
-            icon={<PlayCircle size={16}/>} 
-            color="text-blue-500" 
-            cardClass={cardClass} 
-            textHead={textHeadClass}
-          />
+        <div onClick={() => { setIsAdding(true); onSelectApp(null); }} className={`p-4 rounded-xl border-2 border-dashed flex items-center justify-center cursor-pointer transition-all ${isAdding ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-slate-300 hover:border-blue-400 text-slate-400'}`}>
+          <div className="flex flex-col items-center"><Plus size={24} /><span className="font-medium">Add New Game</span></div>
+        </div>
+      </div>
 
-          {/* Thẻ 4: SỬA LỖI (Thêm || 0) */}
-          <KpiCard 
-            title="Ads Watched" 
-            value={(data?.summary?.total_ads || 0).toLocaleString()} 
-            icon={<Video size={16}/>} 
-            color="text-green-500" 
-            cardClass={cardClass} 
-            textHead={textHeadClass}
-          />
-
-          {/* Thẻ 5: SỬA LỖI (Thêm || 0) */}
-          <KpiCard 
-            title="IAP Purchases" 
-            value={(data?.summary?.total_iap || 0).toLocaleString()} 
-            icon={<CreditCard size={16}/>} 
-            color="text-purple-500" 
-            cardClass={cardClass} 
-            textHead={textHeadClass}
-          />
+      {/* 2. MAIN CONFIG FORM */}
+      <div className="bg-white dark:bg-slate-800 p-8 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
+        <div className="flex justify-between items-start mb-6">
+          <h3 className="text-lg font-bold flex items-center gap-2">
+            <Settings size={20} />
+            {isAdding ? "Create New Game Config" : `Configuration: ${formData.name}`}
+          </h3>
         </div>
 
-        {/* MAIN CHART */}
-        <div className={`p-6 rounded-xl border mb-6 ${cardClass}`}>
-          <h3 className="text-sm font-semibold text-slate-500 mb-6">Revenue vs Fail Rate by Level</h3>
-          <div className="h-[400px] w-full overflow-x-auto custom-scrollbar">
-            <div className="min-w-[2000px] h-full"> 
-                <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={chartData} margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-                    <defs><linearGradient id="colorBar" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3b82f6" stopOpacity={0.8}/><stop offset="95%" stopColor="#3b82f6" stopOpacity={0.3}/></linearGradient></defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? "#2d3748" : "#e2e8f0"} vertical={false} />
-                    <XAxis dataKey="name" interval={0} angle={-90} textAnchor="end" stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} height={60}/>
-                    <YAxis yAxisId="left" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} tickFormatter={formatCurrency}/>
-                    <YAxis yAxisId="right" orientation="right" stroke="#ef4444" fontSize={11} tickLine={false} axisLine={false} unit="%" />
-                    <Tooltip contentStyle={{ backgroundColor: darkMode ? '#1a202c' : '#fff', borderColor: darkMode ? '#2d3748' : '#e2e8f0', borderRadius: '8px' }} />
-                    <Bar yAxisId="left" dataKey="total" name="Revenue" fill="url(#colorBar)" barSize={8} radius={[4, 4, 0, 0]} />
-                    <Line yAxisId="right" type="monotone" dataKey="failRate" name="Fail Rate" stroke="#ef4444" strokeWidth={1} dot={false} />
-                </ComposedChart>
-                </ResponsiveContainer>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Game Name</label>
+            <input type="text" className="w-full px-4 py-2 rounded border" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">AppMetrica App ID</label>
+            <input type="text" className="w-full px-4 py-2 rounded border" value={formData.app_id} onChange={e => setFormData({ ...formData, app_id: e.target.value })} />
+          </div>
+          <div className="space-y-2 col-span-2">
+            <label className="text-sm font-medium">OAuth Token</label>
+            <input type="password" className="w-full px-4 py-2 rounded border font-mono" value={formData.api_token} onChange={e => setFormData({ ...formData, api_token: e.target.value })} />
+          </div>
+          <div className="space-y-2"><label className="text-sm font-medium">Schedule Time</label><input type="time" className="w-full px-4 py-2 rounded border" value={formData.schedule_time} onChange={e => setFormData({ ...formData, schedule_time: e.target.value })} /></div>
+          <div className="space-y-2"><label className="text-sm font-medium">Interval (Min)</label><input type="number" className="w-full px-4 py-2 rounded border" value={formData.interval_minutes} onChange={e => setFormData({ ...formData, interval_minutes: parseInt(e.target.value) })} /></div>
+          <div className="flex items-center gap-3 mt-4"><input type="checkbox" className="w-5 h-5" checked={formData.is_active} onChange={e => setFormData({ ...formData, is_active: e.target.checked })} /><label className="text-sm font-medium">Active (Enable Auto-Sync)</label></div>
+        </div>
+
+        {/* --- PHẦN MỚI: BẢNG PREVIEW CONFIG --- */}
+        {/* --- HIỂN THỊ PREVIEW DỰA TRÊN STATE MỚI --- */}
+        {previewData && (
+          <div className="mt-6 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden animate-in fade-in slide-in-from-top-2">
+            {/* Header nhỏ */}
+            <div className="px-4 py-2 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center">
+              <span className="text-xs font-bold uppercase text-slate-500 tracking-wider">Analytics Map Preview</span>
+              <span className="text-xs text-blue-600 italic">Active Configuration</span>
+            </div>
+
+            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Cột 1: Level Events */}
+              <div>
+                <h4 className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Gamepad2 size={12} /> Level Events</h4>
+                <div className="space-y-1 text-sm border-l-2 border-slate-200 pl-3">
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="text-slate-500 text-xs">Start:</span>
+                    <code className="bg-white dark:bg-slate-800 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 text-blue-600 font-mono text-xs truncate max-w-[150px]">{previewData.events?.level_start || '-'}</code>
+                  </div>
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="text-slate-500 text-xs">Win:</span>
+                    <code className="bg-white dark:bg-slate-800 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 text-emerald-600 font-mono text-xs truncate max-w-[150px]">{previewData.events?.level_win || '-'}</code>
+                  </div>
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="text-slate-500 text-xs">Fail:</span>
+                    <code className="bg-white dark:bg-slate-800 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600 text-red-500 font-mono text-xs truncate max-w-[150px]">{previewData.events?.level_fail || '-'}</code>
+                  </div>
+                </div>
+              </div>
+
+              {/* Cột 2: Boosters List */}
+              <div>
+                <h4 className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Coins size={12} /> Boosters ({previewData.boosters?.length || 0})</h4>
+                {previewData.boosters && previewData.boosters.length > 0 ? (
+                  <div className="max-h-32 overflow-y-auto custom-scrollbar border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800">
+                    <table className="w-full text-xs text-left">
+                      {/* --- ĐOẠN CẦN SỬA LẠI Ở ĐÂY --- */}
+                      <thead className="bg-slate-50 dark:bg-slate-900 sticky top-0 z-10">
+                        <tr>
+                          <th className="p-2 border-b font-medium text-slate-500">Log Event</th>
+                          {/* BẠN ĐANG THIẾU DÒNG NÀY: */}
+                          <th className="p-2 border-b font-medium text-slate-500">Display</th>
+                          <th className="p-2 border-b font-medium text-slate-500 text-right">Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewData.boosters.map((b: any, i: number) => (
+                          <tr key={i} className="border-b last:border-0 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                            <td className="p-2 font-mono text-slate-600 dark:text-slate-300 truncate max-w-[120px]" title={b.event_name}>{b.event_name}</td>
+
+                            {/* BẠN ĐANG THIẾU DÒNG NÀY: */}
+                            <td className="p-2 text-slate-700 dark:text-slate-200 font-medium truncate max-w-[100px]">{b.display_name || '-'}</td>
+
+                            <td className="p-2 text-right font-mono text-orange-600 font-bold">{b.coin_cost}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      {/* -------------------------------- */}
+                    </table>
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-400 italic border border-dashed border-slate-300 rounded p-2 text-center">No boosters mapped yet.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="mt-8 flex justify-end gap-3">
+          {/* Nút Advanced Analytics (MỚI) */}
+          {!isAdding && selectedApp && (
+            <button onClick={handleOpenAnalytics} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-md shadow-indigo-200">
+              <Database size={18} /> Advanced Analytics
+            </button>
+          )}
+
+          <button onClick={handleSubmit} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2">
+            <Save size={18} /> {isAdding ? "Create Game" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+
+      {/* 3. MODAL CONFIG ANALYTICS (MỚI - POPUP) */}
+      {showAnalyticsConfig && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-3xl rounded-xl shadow-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95">
+            <div className="p-4 border-b dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-900 rounded-t-xl">
+              <div className="flex items-center gap-3">
+                <Database size={20} className="text-indigo-600" />
+                <h3 className="text-lg font-bold">Event Mapping: {selectedApp?.name}</h3>
+              </div>
+              <button onClick={() => setShowAnalyticsConfig(false)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full"><X size={20} /></button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-6">
+              {/* Event Mapping Section */}
+              <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-lg border border-slate-200 dark:border-slate-700">
+                <h4 className="font-bold text-slate-700 dark:text-slate-300 mb-4 flex items-center gap-2"><Gamepad2 size={18} /> Level Events Definition</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-xs font-semibold uppercase text-slate-500 mb-1 block">Start Level Event</label>
+                    <input type="text" placeholder="e.g. level_start" className="w-full p-2 text-sm border rounded"
+                      value={analyticsData.events.level_start}
+                      onChange={e => setAnalyticsData({ ...analyticsData, events: { ...analyticsData.events, level_start: e.target.value } })}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold uppercase text-slate-500 mb-1 block">Win Level Event</label>
+                    <input type="text" placeholder="e.g. mission_completed" className="w-full p-2 text-sm border rounded"
+                      value={analyticsData.events.level_win}
+                      onChange={e => setAnalyticsData({ ...analyticsData, events: { ...analyticsData.events, level_win: e.target.value } })}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold uppercase text-slate-500 mb-1 block">Fail Level Event</label>
+                    <input type="text" placeholder="e.g. mission_failed" className="w-full p-2 text-sm border rounded"
+                      value={analyticsData.events.level_fail}
+                      onChange={e => setAnalyticsData({ ...analyticsData, events: { ...analyticsData.events, level_fail: e.target.value } })}
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mt-2 italic">* Nhập chính xác tên sự kiện (Raw Event Name) mà game bắn lên server.</p>
+              </div>
+
+              {/* Booster Config Section */}
+              <div>
+                <div className="flex justify-between items-center mb-3">
+                  <h4 className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-2"><Coins size={18} /> Booster & Economy Config</h4>
+                  <button onClick={addBooster} className="text-sm bg-blue-50 text-blue-600 px-3 py-1 rounded font-bold border border-blue-100 hover:bg-blue-100 flex items-center gap-1"><Plus size={14} /> Add Booster</button>
+                </div>
+
+                <div className="border rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-100 dark:bg-slate-900 text-slate-500">
+                      <tr>
+                        <th className="p-3 text-left">Event Name (Log)</th>
+                        <th className="p-3 text-left">Display Name</th>
+                        <th className="p-3 text-left">Cost (Coin)</th>
+                        <th className="p-3 w-10"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {analyticsData.boosters?.map((b: any, idx: number) => (
+                        <tr key={idx} className="bg-white dark:bg-slate-800">
+                          <td className="p-2"><input type="text" className="w-full p-1 border rounded" placeholder="e.g. use_hammer" value={b.event_name} onChange={e => updateBooster(idx, 'event_name', e.target.value)} /></td>
+                          <td className="p-2"><input type="text" className="w-full p-1 border rounded" placeholder="e.g. Hammer" value={b.display_name} onChange={e => updateBooster(idx, 'display_name', e.target.value)} /></td>
+                          <td className="p-2"><input type="number" className="w-full p-1 border rounded" placeholder="500" value={b.coin_cost} onChange={e => updateBooster(idx, 'coin_cost', e.target.value)} /></td>
+                          <td className="p-2 text-center"><button onClick={() => removeBooster(idx)} className="text-red-400 hover:text-red-600"><Trash2 size={16} /></button></td>
+                        </tr>
+                      ))}
+                      {(!analyticsData.boosters || analyticsData.boosters.length === 0) && (
+                        <tr><td colSpan={4} className="p-4 text-center text-slate-400 italic">No boosters configured. Click "Add Booster" to start.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t bg-slate-50 dark:bg-slate-900 rounded-b-xl flex justify-end gap-3">
+              <button onClick={() => setShowAnalyticsConfig(false)} className="px-4 py-2 border rounded-lg font-medium hover:bg-slate-200">Cancel</button>
+              <button onClick={handleSaveAnalytics} className="px-4 py-2 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg font-bold flex items-center gap-2"><Save size={18} /> Save Configuration</button>
             </div>
           </div>
         </div>
-
-        {/* 2 TABLES */}
-        <div className="grid grid-cols-2 gap-6 mb-6">
-          <div className={`p-6 rounded-xl border h-[350px] overflow-hidden flex flex-col ${cardClass}`}>
-            <h3 className="text-sm font-semibold text-slate-500 mb-4">All Levels Data (Sorted by Level)</h3>
-            <div className="overflow-auto flex-1 pr-2 custom-scrollbar"><TableContent data={chartData} textHead={textHeadClass} /></div>
-          </div>
-          <div className={`p-6 rounded-xl border h-[350px] overflow-hidden flex flex-col relative ${cardClass}`}>
-            <div className="absolute top-0 left-0 w-1 h-full bg-yellow-500"></div>
-            <h3 className="text-sm font-semibold text-yellow-600 mb-4 flex items-center gap-2"><DollarSign size={16}/> Top Highest Revenue</h3>
-            <div className="overflow-auto flex-1 pr-2 custom-scrollbar"><TableContent data={sortedByRevenue} highlightRevenue textHead={textHeadClass} /></div>
-          </div>
-        </div>
-
-        {/* 2 PIE CHARTS */}
-        <div className="grid grid-cols-2 gap-6">
-            <PieCard title="Ads vs IAP Distribution" data={pieData1} colors={PIE_COLORS_1} cardClass={cardClass} />
-            <PieCard title="Win vs Fail Ratio" data={pieData2} colors={PIE_COLORS_2} cardClass={cardClass} />
-        </div>
+      )}
     </div>
   );
 }
 
-// ====================================================================================
-// 2. MONITOR VIEW
-// ====================================================================================
-function MonitorView({ darkMode, cardClass, textHeadClass, logs, setLogs, isRunning, setIsRunning }: any) {
-    
-    const formatToVN = (dateString: string) => {
-    if (!dateString) return 'N/A';
-    // Nếu chuỗi thời gian chưa có chữ Z ở cuối (UTC), thì cộng thêm vào để trình duyệt hiểu đúng
-    const utcString = dateString.endsWith('Z') ? dateString : dateString + 'Z';
-    
-    return new Date(utcString).toLocaleString('vi-VN', {
-        timeZone: 'Asia/Ho_Chi_Minh', // Ép buộc múi giờ VN (GMT+7)
-        hour12: false, // Dùng định dạng 24h (16:00 thay vì 4:00 PM)
-        year: 'numeric', 
-        month: '2-digit', 
-        day: '2-digit',
-        hour: '2-digit', 
-        minute: '2-digit',
-        second: '2-digit'
+// --- DASHBOARD VIEW (V2.0: BOOSTER ECONOMY & DATE FILTER) ---
+function DashboardView({ selectedApp }: any) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  // State lọc ngày (Mặc định rỗng = Lấy tất cả)
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+
+  const fetchDashboard = () => {
+    if (!selectedApp) return;
+    setLoading(true);
+
+    // Xây dựng URL với bộ lọc ngày
+    const params = new URLSearchParams();
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+
+    fetch(`${API_URL}/dashboard/${selectedApp.id}?${params.toString()}`)
+      .then(res => res.json())
+      .then(json => {
+        if (json.success) setData(json);
+      })
+      .catch(err => console.error(err))
+      .finally(() => setLoading(false));
+  };
+
+  // Tự động fetch khi đổi App hoặc đổi Ngày
+  useEffect(() => {
+    fetchDashboard();
+  }, [selectedApp, startDate, endDate]);
+
+  if (!data) return <div className="p-10 text-center text-slate-400">Loading Dashboard...</div>;
+
+  const { overview } = data;
+  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+
+      {/* 1. FILTER BAR & TITLE */}
+      <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
+        <div>
+          <h3 className="font-bold text-lg flex items-center gap-2">
+            <LayoutDashboard className="text-blue-600" />
+            Strategic Overview
+          </h3>
+          <p className="text-xs text-slate-500">Business Metrics & Game Economy</p>
+        </div>
+
+        <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
+          <Calendar size={16} className="text-slate-400 ml-2" />
+          <input
+            type="date"
+            className="bg-transparent border-none text-sm outline-none w-32 text-slate-600 dark:text-slate-300"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+          <span className="text-slate-400">-</span>
+          <input
+            type="date"
+            className="bg-transparent border-none text-sm outline-none w-32 text-slate-600 dark:text-slate-300"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+          />
+          {(startDate || endDate) && (
+            <button onClick={() => { setStartDate(''); setEndDate('') }} className="text-red-500 hover:bg-red-50 p-1 rounded-md transition-colors"><X size={14} /></button>
+          )}
+        </div>
+      </div>
+
+      {/* 2. KPI CARDS (UPDATED) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* CARD 1: BOOSTER REVENUE */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
+          <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Coins size={64} /></div>
+          <h4 className="text-slate-500 text-sm font-medium uppercase tracking-wider">Booster Revenue</h4>
+          <div className="text-3xl font-bold text-emerald-600 mt-2 flex items-baseline gap-1">
+            {overview.cards.revenue.toLocaleString()} <span className="text-sm font-normal text-slate-400">Coins</span>
+          </div>
+          <div className="mt-2 text-xs text-emerald-600 bg-emerald-50 w-fit px-2 py-1 rounded-full flex items-center gap-1">
+            <TrendingUp size={12} /> Based on config price
+          </div>
+        </div>
+
+        {/* CARD 2: ACTIVE USERS */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
+          <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Users size={64} /></div>
+          <h4 className="text-slate-500 text-sm font-medium uppercase tracking-wider">Active Users</h4>
+          <div className="text-3xl font-bold text-blue-600 mt-2">
+            {overview.cards.active_users.toLocaleString()}
+          </div>
+          <div className="mt-2 text-xs text-blue-600 bg-blue-50 w-fit px-2 py-1 rounded-full">
+            Unique UserIDs
+          </div>
+        </div>
+
+        {/* CARD 3: TOTAL EVENTS */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
+          <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Activity size={64} /></div>
+          <h4 className="text-slate-500 text-sm font-medium uppercase tracking-wider">Total Data Points</h4>
+          <div className="text-3xl font-bold text-purple-600 mt-2">
+            {overview.cards.total_events.toLocaleString()}
+          </div>
+          <div className="mt-2 text-xs text-purple-600 bg-purple-50 w-fit px-2 py-1 rounded-full">
+            Raw Events Processed
+          </div>
+        </div>
+      </div>
+
+      {/* 3. CHARTS ROW */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        {/* CHART 1: TOP BOOSTER ECONOMY (NEW!) */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
+          <h4 className="font-bold text-slate-700 dark:text-slate-200 mb-4 flex items-center gap-2">
+            <Zap className="text-amber-500" size={18} /> Top Selling Boosters (By Revenue)
+          </h4>
+          <div className="h-[300px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={overview.booster_chart} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
+                <XAxis type="number" hide />
+                <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 12 }} />
+                <RechartsTooltip
+                  contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                  formatter={(value: any) => [`${value.toLocaleString()} Coins`, 'Revenue']}
+                />
+                <Bar dataKey="total_spent" fill="#f59e0b" radius={[0, 4, 4, 0]} barSize={20}>
+                  {overview.booster_chart.map((entry: any, index: number) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* CHART 2: EVENT FREQUENCY (EXISTING) */}
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
+          <h4 className="font-bold text-slate-700 dark:text-slate-200 mb-4 flex items-center gap-2">
+            <BarChart3 className="text-blue-500" size={18} /> Event Frequency Overview
+          </h4>
+          <div className="h-[300px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={overview.chart_main} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-15} textAnchor="end" height={60} />
+                <YAxis tick={{ fontSize: 12 }} />
+                <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                <Bar dataKey="value" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={40} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+function MonitorView({ selectedApp }: any) {
+  const [history, setHistory] = useState<any[]>([]);
+  const [selectedJob, setSelectedJob] = useState<any>(null);
+  const [filterStartDate, setFilterStartDate] = useState('');
+  const [filterEndDate, setFilterEndDate] = useState('');
+
+  // State phân trang
+  const [pagination, setPagination] = useState({
+    current_page: 1,
+    total_pages: 1,
+    total_records: 0
+  });
+
+  // Hàm "ép" kiểu ngày tháng an toàn
+  const parseSafeDate = (dateStr: any) => {
+    if (!dateStr) return null;
+    let d = new Date(dateStr);
+    if (!isNaN(d.getTime())) return d;
+    if (typeof dateStr === 'string') {
+      const parts = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s*(\d{0,2}):?(\d{0,2}):?(\d{0,2})/);
+      if (parts) {
+        return new Date(
+          parseInt(parts[3]), parseInt(parts[2]) - 1, parseInt(parts[1]),
+          parseInt(parts[4]) || 0, parseInt(parts[5]) || 0, parseInt(parts[6]) || 0
+        );
+      }
+    }
+    return null;
+  };
+
+  const fetchHistory = (page = 1) => {
+    if (!selectedApp) return;
+
+    const params = new URLSearchParams({
+      app_id: selectedApp.id,
+      page: page.toString(),
+      limit: '30'
     });
-};
 
-    const [jobHistory, setJobHistory] = useState<any[]>([]);
+    if (filterStartDate) params.append('start_date', filterStartDate);
+    if (filterEndDate) params.append('end_date', filterEndDate);
 
-    const fetchHistory = async () => {
-        try {
-            const res = await fetch(`${API_URL}/etl/history`);
-            if (res.ok) setJobHistory(await res.json());
-        } catch (e) {}
-    };
+    fetch(`${API_URL}/monitor/history?${params.toString()}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.data && Array.isArray(data.data)) {
+          setHistory(data.data);
+          if (data.pagination) setPagination(data.pagination);
 
-    useEffect(() => {
-        fetchHistory();
-        const interval = setInterval(fetchHistory, 5000);
-        return () => clearInterval(interval);
-    }, []);
-
-    const handleRunJob = async () => {
-        if (!confirm("Xác nhận chạy ETL Job ngay bây giờ?")) return;
-        setIsRunning(true);
-        const timeStr = new Date().toLocaleTimeString();
-        setLogs((prev:any) => [`[${timeStr}] ⏳ Job Started (Manual Trigger)...`, ...prev]);
-        
-        try {
-            const res = await fetch(`${API_URL}/etl/run/1`, { method: 'POST' });
-            const data = await res.json();
-            
-            if (data.status === 'success') {
-                setLogs((prev:any) => [`[${timeStr}] ✅ Job Finished. Saved file.`, ...prev]);
-            } else {
-                setLogs((prev:any) => [`[${timeStr}] ❌ Job Failed. Reason: ${data.message}`, ...prev]);
-            }
-            fetchHistory(); 
-        } catch (error) {
-            setLogs((prev:any) => [`[${timeStr}] 🚨 NETWORK ERROR: Cannot connect to Backend.`, ...prev]);
-        } finally {
-            setIsRunning(false);
+          if (selectedJob) {
+            const updatedJob = data.data.find((job: any) => job.id === selectedJob.id);
+            if (updatedJob) setSelectedJob(updatedJob);
+          }
+        } else if (Array.isArray(data)) {
+          setHistory(data);
         }
-    };
+      })
+      .catch(err => console.error(err));
+  };
 
-    const handleDeleteAll = async () => {
-        if (!confirm("CẢNH BÁO: Xóa toàn bộ lịch sử chạy?")) return;
-        await fetch(`${API_URL}/etl/history/all`, { method: 'DELETE' }); fetchHistory();
-    };
+  useEffect(() => {
+    fetchHistory(1);
+    const interval = setInterval(() => {
+      setPagination(prev => {
+        fetchHistory(prev.current_page);
+        return prev;
+      });
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [selectedApp, filterStartDate, filterEndDate]);
 
-    return (
-        <div className="animate-fade-in max-w-5xl mx-auto pb-10">
-            <header className="mb-8"><h1 className={`text-2xl font-bold ${textHeadClass}`}>System Monitor</h1></header>
+  const handlePageChange = (newPage: number) => {
+    if (newPage >= 1 && newPage <= pagination.total_pages) {
+      fetchHistory(newPage);
+    }
+  };
 
-            <div className={`p-6 rounded-xl border mb-6 flex justify-between items-center ${cardClass}`}>
-                <div><h3 className={`text-lg font-semibold ${textHeadClass}`}>Control Panel</h3><p className="text-sm text-slate-500">Manual ETL Trigger</p></div>
-                <div className="flex gap-4">
-                    <button onClick={handleRunJob} disabled={isRunning} className={`flex items-center gap-2 px-6 py-3 rounded-lg font-bold text-white transition-all ${isRunning ? 'bg-slate-600' : 'bg-green-600 hover:bg-green-700 shadow-lg shadow-green-500/30'}`}>
-                        {isRunning ? <><Activity className="animate-spin"/> Processing...</> : <><Play size={18}/> Run Job Now</>}
-                    </button>
-                    <button onClick={handleDeleteAll} className="flex items-center gap-2 px-6 py-3 rounded-lg font-bold text-white bg-red-600 hover:bg-red-700 shadow-lg shadow-red-500/30"><Trash2 size={18}/> Clear Logs</button>
-                </div>
-            </div>
+  const handleRun = async (type: string, retryJobId?: number) => {
+    if (!selectedApp) return;
+    const body: any = { run_type: type };
+    if (retryJobId) body.retry_job_id = retryJobId;
+    try {
+      await fetch(`${API_URL}/etl/run/${selectedApp.id}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      fetchHistory(pagination.current_page);
+    } catch (e) { alert("Error trigger job"); }
+  };
 
-            <div className={`p-6 rounded-xl border h-[200px] flex flex-col mb-6 ${cardClass}`}>
-                <h3 className="text-sm font-semibold text-slate-500 mb-2">Live Console Logs</h3>
-                <div className="flex-1 bg-black/90 rounded-lg p-4 font-mono text-xs text-green-400 overflow-y-auto custom-scrollbar">
-                    {logs.length === 0 ? <span className="text-slate-600 italic">System Ready. Waiting for schedule or manual run...</span> : logs.map((log:string, i:number) => <div key={i} className="border-b border-white/5 py-1">{log}</div>)}
-                </div>
-            </div>
+  const handleStop = async (jobId: number) => {
+    if (!confirm(`Stop Job #${jobId}?`)) return;
+    await fetch(`${API_URL}/etl/stop/${jobId}`, { method: 'POST' });
+    fetchHistory(pagination.current_page);
+  };
 
-            <div className={`p-6 rounded-xl border ${cardClass}`}>
-                <h3 className={`text-lg font-semibold mb-4 ${textHeadClass}`}>Execution History (Recent 50)</h3>
-                <div className="overflow-x-auto">
-                    <table className="w-full text-sm text-left">
-                        <thead className="text-xs uppercase bg-slate-800 text-slate-400"><tr><th className="px-4 py-3">Type</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Rows</th><th className="px-4 py-3">Message</th><th className="px-4 py-3">Time</th></tr></thead>
-                        <tbody className="divide-y divide-slate-700">
-                            {jobHistory.map((job, index) => (
-                                <tr key={job.id} className="hover:bg-slate-700/30">
-                                    <td className="px-4 py-3 font-mono text-blue-400 font-bold text-xs">{job.job_code}</td>
-                                    <td className="px-4 py-3">
-                                        {job.status === 'success' && <span className="bg-green-500/20 text-green-400 px-2 py-1 rounded text-xs font-bold">Success</span>}
-                                        {job.status === 'failed' && <span className="bg-red-500/20 text-red-400 px-2 py-1 rounded text-xs font-bold">Failed</span>}
-                                        {job.status === 'running' && <span className="bg-blue-500/20 text-blue-400 px-2 py-1 rounded text-xs font-bold animate-pulse">Running</span>}
-                                    </td>
-                                    <td className="px-4 py-3 font-bold">{job.rows_processed}</td>
-                                    <td className="px-4 py-3 text-xs opacity-80 truncate max-w-[200px]" title={job.message}>{job.message}</td>
-                                    <td className="px-4 py-3 text-slate-500 text-xs font-mono">{formatToVN(job.start_time)}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+  const handleDeleteAll = async () => {
+    if (!confirm("DELETE ALL HISTORY?")) return;
+    await fetch(`${API_URL}/monitor/purge?app_id=${selectedApp.id}`, { method: 'DELETE' });
+    fetchHistory(1);
+  }
+
+  const handleDeleteSingle = async (e: React.MouseEvent, jobId: number) => {
+    e.stopPropagation();
+    if (!confirm(`Delete record #${jobId}?`)) return;
+    await fetch(`${API_URL}/monitor/history/${jobId}`, { method: 'DELETE' });
+    fetchHistory(pagination.current_page);
+  };
+
+  const isRunningState = (status: string) => ['Running', 'Processing'].includes(status);
+
+  const formatRawTime = (dateStr: any) => {
+    const date = parseSafeDate(dateStr);
+    if (!date) return String(dateStr);
+    return date.toLocaleString('en-GB', { hour12: false });
+  };
+
+  const calculateDuration = (startStr: any, endStr: any) => {
+    const startDate = parseSafeDate(startStr);
+    const endDate = parseSafeDate(endStr);
+    if (!startDate) return '-';
+    const endMs = endDate ? endDate.getTime() : (!endStr ? Date.now() : null);
+    if (!endMs) return '-';
+    const diffMs = endMs - startDate.getTime();
+    const diffSec = Math.floor(diffMs / 1000);
+    if (diffSec < 0) return '0s';
+    const hours = Math.floor(diffSec / 3600);
+    const minutes = Math.floor((diffSec % 3600) / 60);
+    const seconds = diffSec % 60;
+    const parts = [];
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    parts.push(`${seconds}s`);
+    return parts.join(' ');
+  };
+
+  const getRunTypeBadge = (type: string) => {
+    let colorClass = "bg-slate-100 text-slate-600";
+    switch (type?.toLowerCase()) {
+      case 'manual': colorClass = "bg-blue-100 text-blue-700"; break;
+      case 'schedule': colorClass = "bg-purple-100 text-purple-700"; break;
+      case 'retry': colorClass = "bg-orange-100 text-orange-700"; break;
+      case 'demo': colorClass = "bg-yellow-100 text-yellow-700"; break;
+      default: colorClass = "bg-slate-100 text-slate-600";
+    }
+    return <span className={`px-2 py-1 rounded-md text-xs font-bold uppercase tracking-wider ${colorClass}`}>{type}</span>;
+  };
+
+  return (
+    <div className="space-y-6 relative">
+      <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4 w-full md:w-auto">
+          <h3 className="font-bold text-lg whitespace-nowrap">Job History Monitor</h3>
+          <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700">
+            <Filter size={16} className="text-slate-400" />
+            <input type="date" className="text-sm bg-transparent border-none outline-none text-slate-600 dark:text-slate-300 focus:ring-0 w-32" value={filterStartDate} onChange={(e) => setFilterStartDate(e.target.value)} />
+            <span className="text-slate-400">-</span>
+            <input type="date" className="text-sm bg-transparent border-none outline-none text-slate-600 dark:text-slate-300 focus:ring-0 w-32" value={filterEndDate} onChange={(e) => setFilterEndDate(e.target.value)} />
+            {(filterStartDate || filterEndDate) && (<button onClick={() => { setFilterStartDate(''); setFilterEndDate('') }} className="text-red-500 hover:text-red-700 px-1 font-bold">✕</button>)}
+          </div>
         </div>
-    )
-}
-
-// ====================================================================================
-// 3. SETTINGS VIEW (ĐÃ BỔ SUNG CỘT SOURCE)
-// ====================================================================================
-function SettingsView({ darkMode, cardClass, textHeadClass }: any) {
-    const [config, setConfig] = useState({ 
-        app_name: '', appmetrica_app_id: '', appmetrica_token: '', 
-        daily_schedule_time: '09:00', interval_minutes: 60          
-    });
-    const [items, setItems] = useState<any[]>([]);
-    const [newItem, setNewItem] = useState({ event_param_key: '', display_name: '', price: '' });
-
-    useEffect(() => {
-        fetch(`${API_URL}/apps/`).then(res => res.json()).then(data => { if(data) setConfig(data); });
-        fetchBooster();
-    }, []);
-
-    const fetchBooster = () => fetch(`${API_URL}/boosters/`).then(res => res.json()).then(data => setItems(data));
-
-    const handleSaveConfig = async () => {
-        if (!confirm("Lưu cấu hình và cập nhật lịch chạy?")) return;
-        await fetch(`${API_URL}/apps/`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(config)
-        });
-        alert("Đã lưu thành công! Hệ thống sẽ chạy theo lịch mới.");
-    };
-
-    const handleAddItem = async () => {
-        if(!newItem.event_param_key || !newItem.display_name) return alert("Thiếu thông tin");
-        await fetch(`${API_URL}/boosters/`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ app_id: 1, ...newItem, price: parseFloat(newItem.price || '0') }) 
-        });
-        setNewItem({ event_param_key: '', display_name: '', price: '' }); fetchBooster();
-    };
-
-    const handleDeleteItem = async (id: number) => {
-        if(!confirm("Xóa Item này?")) return;
-        await fetch(`${API_URL}/boosters/${id}`, { method: 'DELETE' }); fetchBooster();
-    };
-
-    return (
-        <div className="animate-fade-in max-w-4xl mx-auto pb-10">
-            <header className="mb-8"><h1 className={`text-2xl font-bold ${textHeadClass}`}>Settings</h1></header>
-
-            <div className={`p-6 rounded-xl border mb-8 ${cardClass}`}>
-                <h3 className={`text-lg font-semibold mb-6 flex items-center gap-2 ${textHeadClass}`}><Settings size={20}/> System Configuration</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div><label className="block text-xs font-medium text-slate-500 mb-2 uppercase">App Name</label><input type="text" value={config.app_name} onChange={(e) => setConfig({...config, app_name: e.target.value})} className={`w-full p-3 rounded-lg border outline-none ${darkMode ? 'bg-[#11141d] border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}/></div>
-                    <div><label className="block text-xs font-medium text-slate-500 mb-2 uppercase">AppMetrica ID</label><input type="text" value={config.appmetrica_app_id} onChange={(e) => setConfig({...config, appmetrica_app_id: e.target.value})} className={`w-full p-3 rounded-lg border outline-none ${darkMode ? 'bg-[#11141d] border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}/></div>
-                    <div className="md:col-span-2"><label className="block text-xs font-medium text-slate-500 mb-2 uppercase">API Token</label><input type="password" value={config.appmetrica_token} onChange={(e) => setConfig({...config, appmetrica_token: e.target.value})} className={`w-full p-3 rounded-lg border outline-none ${darkMode ? 'bg-[#11141d] border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}/></div>
-                    
-                    <div className="p-4 border border-blue-500/30 rounded-lg bg-blue-500/5">
-                        <label className="block text-xs font-medium text-blue-400 mb-2 uppercase flex items-center gap-2"><Clock size={14}/> Daily Schedule</label>
-                        <input type="time" value={config.daily_schedule_time} onChange={(e) => setConfig({...config, daily_schedule_time: e.target.value})} className={`w-full p-3 rounded-lg border outline-none ${darkMode ? 'bg-[#11141d] border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}/>
-                    </div>
-                    <div className="p-4 border border-green-500/30 rounded-lg bg-green-500/5">
-                        <label className="block text-xs font-medium text-green-400 mb-2 uppercase flex items-center gap-2"><RotateCcw size={14}/> Interval Cycle</label>
-                        <input type="number" min="0" value={config.interval_minutes} onChange={(e) => setConfig({...config, interval_minutes: parseInt(e.target.value) || 0})} className={`w-full p-3 rounded-lg border outline-none ${darkMode ? 'bg-[#11141d] border-slate-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'}`}/>
-                    </div>
-                </div>
-                <div className="mt-6 flex justify-end"><button onClick={handleSaveConfig} className="flex items-center gap-2 px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"><Save size={16}/> Save Configuration</button></div>
-            </div>
-
-            <div className={`p-6 rounded-xl border ${cardClass}`}>
-                <div className="flex justify-between items-center mb-6"><h3 className={`text-lg font-semibold flex items-center gap-2 ${textHeadClass}`}><DollarSign size={20}/> Item Management</h3></div>
-                
-                {/* FORM ADD MANUAL */}
-                <div className="flex gap-4 mb-6 items-end">
-                      <div className="flex-1"><input placeholder="Display Name (VD: Gold Pack)" value={newItem.display_name} onChange={e=>setNewItem({...newItem, display_name: e.target.value})} className="w-full p-2 rounded border bg-transparent text-slate-400 text-sm"/></div>
-                      <div className="flex-1"><input placeholder="Key (VD: packID_Gold)" value={newItem.event_param_key} onChange={e=>setNewItem({...newItem, event_param_key: e.target.value})} className="w-full p-2 rounded border bg-transparent text-slate-400 text-sm"/></div>
-                      <div className="w-24"><input type="number" placeholder="Price" value={newItem.price} onChange={e=>setNewItem({...newItem, price: e.target.value})} className="w-full p-2 rounded border bg-transparent text-slate-400 text-sm"/></div>
-                      <button onClick={handleAddItem} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded text-sm"><Plus size={16}/></button>
-                </div>
-
-                {/* TABLE CÓ CỘT SOURCE */}
-                <div className="overflow-x-auto">
-                    <table className="w-full text-sm text-left">
-                        <thead className={`text-xs uppercase border-b ${darkMode ? 'text-slate-500 border-slate-700' : 'text-slate-400 border-slate-200'}`}>
-                            <tr>
-                                <th className="px-4 py-3">No.</th>
-                                <th className="px-4 py-3">Name</th>
-                                <th className="px-4 py-3">Key</th>
-                                <th className="px-4 py-3 text-right">Price</th>
-                                <th className="px-4 py-3 text-center">Source</th> {/* <--- CỘT NÀY ĐÂY */}
-                                <th className="px-4 py-3 text-center">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody className={`divide-y ${darkMode ? 'divide-slate-800' : 'divide-slate-100'}`}>
-                            {items.map((item, index) => (
-                                <tr key={item.id} className="hover:opacity-80">
-                                    <td className={`px-4 py-3 ${textHeadClass}`}>{index + 1}</td>
-                                    <td className={`px-4 py-3 font-medium ${textHeadClass}`}>{item.display_name}</td>
-                                    <td className="px-4 py-3 text-slate-500 font-mono">{item.event_param_key}</td>
-                                    <td className="px-4 py-3 text-right text-green-500 font-bold">${item.price}</td>
-                                    <td className="px-4 py-3 text-center">
-                                        {item.source_type === 'AUTO' 
-                                            ? <span className="bg-purple-500/20 text-purple-400 px-2 py-1 rounded text-xs font-bold border border-purple-500/30">Auto-Scan</span>
-                                            : <span className="bg-slate-500/20 text-slate-400 px-2 py-1 rounded text-xs font-bold border border-slate-500/30">Manual</span>
-                                        }
-                                    </td>
-                                    <td className="px-4 py-3 flex justify-center gap-3"><button onClick={()=>handleDeleteItem(item.id)} className="text-red-500 hover:text-red-400"><Trash2 size={16}/></button></td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                    {items.length === 0 && <div className="p-4 text-center text-slate-500 italic">Chưa có items. Hãy chạy "Run Job Now" để tự động quét từ AppMetrica!</div>}
-                </div>
-            </div>
+        <div className="flex gap-2 w-full md:w-auto justify-end">
+          <button onClick={() => handleRun('demo')} className="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm whitespace-nowrap"><Play size={16} /> Test Demo</button>
+          <button onClick={() => handleRun('manual')} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm whitespace-nowrap"><RotateCcw size={16} /> Run ETL Now</button>
+          <button onClick={handleDeleteAll} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm whitespace-nowrap"><Trash2 size={16} /> Delete All</button>
         </div>
-    )
-}
+      </div>
 
-// SHARED COMPONENTS (GIỮ NGUYÊN)
-function NavItem({ icon, label, active, onClick, darkMode }: any) { return (<div onClick={onClick} className={`flex items-center gap-3 px-3 py-2 mx-2 rounded-lg cursor-pointer transition-colors ${active ? 'bg-blue-600/10 text-blue-600' : darkMode ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'}`}>{icon} <span className="text-sm font-medium">{label}</span></div>); }
-function KpiCard({ title, value, icon, color, cardClass, textHead }: any) { return (<div className={`p-4 rounded-xl border flex flex-col justify-between ${cardClass}`}><div className="flex justify-between items-start mb-2"><span className="text-slate-500 text-xs font-medium uppercase">{title}</span><div className={color}>{icon}</div></div><div className={`text-xl font-bold ${textHead}`}>{value}</div></div>); }
-function TableContent({ data, highlightRevenue, textHead }: any) { return (<table className="w-full text-xs text-left text-slate-500"><thead className="uppercase sticky top-0 opacity-80 backdrop-blur-sm"><tr><th className="px-3 py-2">Level</th><th className="px-3 py-2 text-right">Rev</th><th className="px-3 py-2 text-center">Ads</th><th className="px-3 py-2 text-center">IAP</th><th className="px-3 py-2 text-right">Fail</th></tr></thead><tbody>{data.map((row: any, i: number) => (<tr key={i} className="border-b border-dashed border-slate-700/30 hover:bg-slate-500/5"><td className={`px-3 py-2 font-medium ${textHead}`}>{row.name}</td><td className={`px-3 py-2 text-right font-mono ${highlightRevenue ? 'text-yellow-500 font-bold' : textHead}`}>{formatCurrency(row.total)}</td><td className="px-3 py-2 text-center">{row.ads}</td><td className="px-3 py-2 text-center">{row.iap}</td><td className="px-3 py-2 text-right">{row.failRate}%</td></tr>))}</tbody></table>); }
-function PieCard({title, data, colors, cardClass}: any) { return (<div className={`p-6 rounded-xl border flex flex-col items-center ${cardClass}`}><h3 className="text-sm font-semibold text-slate-500 mb-4 w-full text-left">{title}</h3><div className="h-[250px] w-full flex justify-center"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={data} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>{data.map((entry: any, index: any) => (<Cell key={`cell-${index}`} fill={colors[index % colors.length]} stroke="none" />))}</Pie><Tooltip /> <Legend verticalAlign="bottom" height={36}/></PieChart></ResponsiveContainer></div></div>); }
+      <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col">
+        <div className="overflow-y-auto max-h-[600px] rounded-xl scroll-smooth custom-scrollbar">
+          <table className="w-full text-left text-sm relative border-collapse">
+            <thead className="bg-slate-100 dark:bg-slate-900 sticky top-0 z-10 shadow-sm">
+              <tr>
+                <th className="px-6 py-3">ID</th>
+                <th className="px-6 py-3">Type</th>
+                <th className="px-6 py-3">Start Time</th>
+                <th className="px-6 py-3">End Time</th>
+                <th className="px-6 py-3">Duration</th>
+                <th className="px-6 py-3">Status</th>
+                <th className="px-6 py-3 text-center">Events</th>
+                <th className="px-6 py-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+              {/* [FIX 2] Đổi History (viết hoa) thành history (viết thường) */}
+              {history.length === 0 ? (
+                <tr><td colSpan={8} className="p-10 text-center text-slate-400">No history available.</td></tr>
+              ) : history.map((job: any) => (
+                <tr key={job.id} className="hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                  <td className="px-6 py-3 font-mono text-slate-500">#{job.id}</td>
+                  <td className="px-6 py-3">{getRunTypeBadge(job.run_type)}</td>
+                  <td className="px-6 py-3 font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">{formatRawTime(job.start_time)}</td>
+                  <td className="px-6 py-3 font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                    {job.end_time ? formatRawTime(job.end_time) : <span className="text-blue-500 italic">Running...</span>}
+                  </td>
+                  <td className="px-6 py-3 font-mono text-slate-800 dark:text-slate-200 font-medium">
+                    {calculateDuration(job.start_time, job.end_time)}
+                  </td>
+                  <td className="px-6 py-3"><span className={`px-2 py-1 rounded-full text-xs font-bold flex w-fit items-center gap-1 ${job.status === 'Success' ? 'bg-emerald-100 text-emerald-700' : isRunningState(job.status) ? 'bg-blue-100 text-blue-700 animate-pulse' : job.status === 'Cancelled' ? 'bg-slate-200 text-slate-700' : 'bg-red-100 text-red-700'}`}>{isRunningState(job.status) && <RefreshCw size={12} className="animate-spin" />}{job.status}</span></td>
+                  <td className="px-6 py-3 font-bold text-center text-blue-600">{job.total_events}</td>
+                  <td className="px-6 py-3 text-right">
+                    <div className="flex justify-end gap-2">
+                      {isRunningState(job.status) && (
+                        <button onClick={() => handleStop(job.id)} className="p-2 text-red-500 hover:bg-red-50 rounded-lg border border-red-200 hover:border-red-400 transition-all flex items-center gap-1" title="Stop Job">
+                          <StopCircle size={16} className="animate-pulse" /> STOP
+                        </button>
+                      )}
+                      {['Failed', 'Cancelled', 'Success', 'Skipped'].includes(job.status) && (
+                        <button onClick={() => handleRun('retry', job.id)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg flex items-center gap-1 transition-all border border-transparent hover:border-blue-200" title="Retry">
+                          <RotateCcw size={16} /> {job.status === 'Cancelled' ? 'Resume' : 'Retry'}
+                        </button>
+                      )}
+                      <button onClick={() => setSelectedJob(job)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg flex items-center gap-1 transition-all border border-transparent hover:border-blue-200" title="View Logs Detail"><FileText size={16} /></button>
+                      <button onClick={(e) => handleDeleteSingle(e, job.id)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-slate-100 rounded-lg transition-all" title="Delete Record"><Trash2 size={16} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="p-3 border-t dark:border-slate-700 bg-slate-50 dark:bg-slate-900 rounded-b-xl flex flex-col sm:flex-row justify-between items-center gap-4">
+          <div className="flex items-center gap-4 text-xs text-slate-500">
+            <span>Showing <b>{history.length}</b> jobs</span>
+            <span className="hidden sm:inline">|</span>
+            <span>Total: <b>{pagination.total_records.toLocaleString()}</b> jobs</span>
+          </div>
+
+          <div className="flex items-center gap-1 bg-white dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
+            <button
+              onClick={() => handlePageChange(1)}
+              disabled={pagination.current_page <= 1}
+              className="p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 dark:text-slate-300"
+            >
+              <ChevronsLeft size={16} />
+            </button>
+            <button
+              onClick={() => handlePageChange(pagination.current_page - 1)}
+              disabled={pagination.current_page <= 1}
+              className="p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 dark:text-slate-300 border-r dark:border-slate-700 mr-2"
+            >
+              <ChevronLeft size={16} />
+            </button>
+
+            <span className="text-xs font-bold px-3 text-slate-700 dark:text-slate-200 min-w-[80px] text-center">
+              Page {pagination.current_page} / {pagination.total_pages}
+            </span>
+
+            <button
+              onClick={() => handlePageChange(pagination.current_page + 1)}
+              disabled={pagination.current_page >= pagination.total_pages}
+              className="p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 dark:text-slate-300 border-l dark:border-slate-700 ml-2"
+            >
+              <ChevronRight size={16} />
+            </button>
+            <button
+              onClick={() => handlePageChange(pagination.total_pages)}
+              disabled={pagination.current_page >= pagination.total_pages}
+              className="p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 dark:text-slate-300"
+            >
+              <ChevronsRight size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* [FIX 3] Đặt Modal vào TRONG thẻ div cha, không để rơi ra ngoài */}
+      {selectedJob && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-4xl rounded-xl shadow-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95">
+            <div className="p-4 border-b dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-900 rounded-t-xl">
+              <div className="flex items-center gap-3"><FileText size={20} className="text-blue-600" /><div><h3 className="text-lg font-bold">Log Details #{selectedJob.id}</h3><p className="text-xs text-slate-500">Started: {formatRawTime(selectedJob.start_time)}</p></div></div>
+              <button onClick={() => setSelectedJob(null)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors"><X size={20} /></button>
+            </div>
+            <div className="p-6 overflow-y-auto bg-slate-900 text-green-400 font-mono text-xs whitespace-pre-wrap flex-1 min-h-[400px] shadow-inner">{selectedJob.logs || "No logs recorded."}</div>
+            <div className="p-4 border-t dark:border-slate-700 bg-slate-50 dark:bg-slate-900 rounded-b-xl flex justify-end gap-3">
+              {isRunningState(selectedJob.status) && (<button onClick={() => handleStop(selectedJob.id)} className="px-4 py-2 bg-red-100 text-red-600 hover:bg-red-200 rounded-lg font-bold flex items-center gap-2"><StopCircle size={18} /> Stop</button>)}
+              <button onClick={() => handleRun('retry', selectedJob.id)} className="px-4 py-2 bg-blue-100 text-blue-600 hover:bg-blue-200 rounded-lg font-bold flex items-center gap-2"><RotateCcw size={18} /> Retry</button>
+              <button onClick={() => setSelectedJob(null)} className="px-4 py-2 border rounded-lg font-medium hover:bg-slate-100 dark:hover:bg-slate-700">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
