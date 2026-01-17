@@ -7,11 +7,11 @@ import {
   Play, CheckCircle, Save, Plus, BarChart3, List,
   Calendar, Clock, AlertCircle, X, RotateCcw, FileText, Trash2, StopCircle, RefreshCw,
   Bot, Zap, FlaskConical, Filter, PieChart as PieIcon, Coins, Gamepad2, Database,
-  ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, TrendingUp, Users
+  ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, TrendingUp, Users, ChevronDown, Banknote
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar,
-  PieChart, Pie, Cell, Legend
+  PieChart, Pie, Cell, Legend, Area, ComposedChart,
 } from 'recharts';
 
 // --- TYPE DEFINITIONS ---
@@ -93,20 +93,6 @@ export default function GameAnalyticsApp() {
 
   useEffect(() => { fetchApps(); }, []);
 
-  useEffect(() => {
-    if (activeTab === 'dashboard' && selectedApp) {
-      setLoading(true);
-      fetch(`${API_URL}/dashboard/${selectedApp.id}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.success) setDashboardData(data);
-          else setDashboardData(null);
-        })
-        .catch(err => setDashboardData(null))
-        .finally(() => setLoading(false));
-    }
-  }, [activeTab, selectedApp]);
-
   return (
     <div className="flex h-screen bg-slate-50 dark:bg-slate-900 font-sans text-slate-800 dark:text-slate-200">
       {/* SIDEBAR */}
@@ -151,12 +137,13 @@ export default function GameAnalyticsApp() {
         )}
 
         {activeTab === 'dashboard' && (
-          dashboardData ? (
-            <DashboardView data={dashboardData} loading={loading} appId={selectedApp!.id} />
+          selectedApp ? (
+            // [FIX]: Chỉ cần truyền selectedApp, để api con tự lo việc fetch data
+            <DashboardView selectedApp={selectedApp} />
           ) : (
             <div className="flex h-full items-center justify-center text-slate-400 flex-col gap-4">
               <BarChart3 size={48} className="opacity-20" />
-              {selectedApp ? "No data available. Run ETL in Monitor tab." : "Please select a game in Settings first."}
+              Please select a game in Settings first.
             </div>
           )
         )}
@@ -556,163 +543,224 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
   );
 }
 
-// --- DASHBOARD VIEW (V2.0: BOOSTER ECONOMY & DATE FILTER) ---
 function DashboardView({ selectedApp }: any) {
+  const [activeSubTab, setActiveSubTab] = useState<'overview' | 'level'>('overview');
+
   const [data, setData] = useState<any>(null);
+  const [strategicData, setStrategicData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
-  // State lọc ngày (Mặc định rỗng = Lấy tất cả)
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
+  // State lọc Level (Có Fallback array)
+  const [levels, setLevels] = useState<string[]>([]);
+  const [selectedOverviewLevel, setSelectedOverviewLevel] = useState<string>("");
+
+  // 1. Fetch Levels (Xóa Fallback)
+  useEffect(() => {
+    if (selectedApp) {
+      fetch(`${API_URL}/api/levels/${selectedApp.id}`)
+        .then(res => res.json())
+        .then(arr => {
+          if (Array.isArray(arr) && arr.length > 0) {
+            setLevels(arr);
+          } else {
+            setLevels([]); // Không bịa ra level 1,2,3,4,5 nữa
+          }
+        })
+        .catch(() => setLevels([]));
+    }
+  }, [selectedApp]);
+
+  // 2. Fetch Dashboard Overview
   const fetchDashboard = () => {
     if (!selectedApp) return;
     setLoading(true);
-
-    // Xây dựng URL với bộ lọc ngày
     const params = new URLSearchParams();
     if (startDate) params.append('start_date', startDate);
     if (endDate) params.append('end_date', endDate);
+    if (selectedOverviewLevel) params.append('level_id', selectedOverviewLevel);
 
     fetch(`${API_URL}/dashboard/${selectedApp.id}?${params.toString()}`)
       .then(res => res.json())
-      .then(json => {
-        if (json.success) setData(json);
-      })
-      .catch(err => console.error(err))
+      .then(json => { if (json.success) setData(json); })
       .finally(() => setLoading(false));
   };
 
-  // Tự động fetch khi đổi App hoặc đổi Ngày
+  // 3. Fetch Strategic Chart
   useEffect(() => {
-    fetchDashboard();
-  }, [selectedApp, startDate, endDate]);
+    if (selectedApp) {
+      fetch(`${API_URL}/dashboard/${selectedApp.id}/strategic`)
+        .then(res => res.json())
+        .then(data => { if (data.success) setStrategicData(data.balance_chart); });
+    }
+  }, [selectedApp]);
 
-  if (!data) return <div className="p-10 text-center text-slate-400">Loading Dashboard...</div>;
+  useEffect(() => {
+    if (activeSubTab === 'overview') fetchDashboard();
+  }, [selectedApp, startDate, endDate, selectedOverviewLevel, activeSubTab]);
 
-  const { overview } = data;
+  // [MỚI] Hàm tính Avg Fail Rate từ biểu đồ để hiển thị lên KPI Card
+  const calculateAvgFailRate = () => {
+    if (!strategicData || strategicData.length === 0) return 0;
+    // Nếu đang lọc level cụ thể
+    if (selectedOverviewLevel) {
+      const lvl = strategicData.find((d: any) => d.name === `Lv.${selectedOverviewLevel}`);
+      return lvl ? lvl.fail_rate : 0;
+    }
+    // Nếu không lọc, tính trung bình
+    const total = strategicData.reduce((acc: any, curr: any) => acc + curr.fail_rate, 0);
+    return (total / strategicData.length).toFixed(1);
+  }
+
   const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
-
-      {/* 1. FILTER BAR & TITLE */}
-      <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-        <div>
-          <h3 className="font-bold text-lg flex items-center gap-2">
-            <LayoutDashboard className="text-blue-600" />
-            Strategic Overview
-          </h3>
-          <p className="text-xs text-slate-500">Business Metrics & Game Economy</p>
-        </div>
-
-        <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
-          <Calendar size={16} className="text-slate-400 ml-2" />
-          <input
-            type="date"
-            className="bg-transparent border-none text-sm outline-none w-32 text-slate-600 dark:text-slate-300"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-          />
-          <span className="text-slate-400">-</span>
-          <input
-            type="date"
-            className="bg-transparent border-none text-sm outline-none w-32 text-slate-600 dark:text-slate-300"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-          />
-          {(startDate || endDate) && (
-            <button onClick={() => { setStartDate(''); setEndDate('') }} className="text-red-500 hover:bg-red-50 p-1 rounded-md transition-colors"><X size={14} /></button>
-          )}
-        </div>
+      {/* TAB NAVIGATION */}
+      <div className="flex items-center gap-6 border-b border-slate-200 dark:border-slate-700 mb-2">
+        <button onClick={() => setActiveSubTab('overview')} className={`pb-3 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${activeSubTab === 'overview' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
+          <LayoutDashboard size={16} /> Strategic Overview
+        </button>
+        <button onClick={() => setActiveSubTab('level')} className={`pb-3 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${activeSubTab === 'level' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
+          <Gamepad2 size={16} /> Level Inspector (Deep Dive)
+        </button>
       </div>
 
-      {/* 2. KPI CARDS (UPDATED) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* CARD 1: BOOSTER REVENUE */}
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
-          <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Coins size={64} /></div>
-          <h4 className="text-slate-500 text-sm font-medium uppercase tracking-wider">Booster Revenue</h4>
-          <div className="text-3xl font-bold text-emerald-600 mt-2 flex items-baseline gap-1">
-            {overview.cards.revenue.toLocaleString()} <span className="text-sm font-normal text-slate-400">Coins</span>
-          </div>
-          <div className="mt-2 text-xs text-emerald-600 bg-emerald-50 w-fit px-2 py-1 rounded-full flex items-center gap-1">
-            <TrendingUp size={12} /> Based on config price
-          </div>
-        </div>
+      {activeSubTab === 'overview' ? (
+        !data ? <div className="p-10 text-center text-slate-400 flex flex-col items-center gap-2"><RefreshCw className="animate-spin" /> Loading Overview...</div> : (
+          <>
+            {/* [FIX] HEADER & FILTER BAR MỚI - ĐỒNG BỘ VỚI TAB KIA */}
+            <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-4">
+                {/* 1. LEVEL FILTER (STYLE: CLEAN DROPDOWN) */}
+                <div className="relative group">
+                  <div className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-600"><Filter size={18} /></div>
+                  <select
+                    value={selectedOverviewLevel}
+                    onChange={(e) => setSelectedOverviewLevel(e.target.value)}
+                    className="appearance-none bg-slate-50 border border-slate-200 text-slate-700 py-2 pl-10 pr-10 rounded-lg font-bold outline-none cursor-pointer min-w-[180px] hover:bg-slate-100 transition-colors"
+                  >
+                    {levels.map(lvl => (
+                      <option key={lvl} value={lvl}>
+                        {lvl === '0' ? '🏠 Lobby / Tutorial' : `Level ${lvl}`}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                </div>
 
-        {/* CARD 2: ACTIVE USERS */}
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
-          <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Users size={64} /></div>
-          <h4 className="text-slate-500 text-sm font-medium uppercase tracking-wider">Active Users</h4>
-          <div className="text-3xl font-bold text-blue-600 mt-2">
-            {overview.cards.active_users.toLocaleString()}
-          </div>
-          <div className="mt-2 text-xs text-blue-600 bg-blue-50 w-fit px-2 py-1 rounded-full">
-            Unique UserIDs
-          </div>
-        </div>
+                <div className="h-6 w-px bg-slate-200 hidden md:block"></div>
 
-        {/* CARD 3: TOTAL EVENTS */}
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
-          <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Activity size={64} /></div>
-          <h4 className="text-slate-500 text-sm font-medium uppercase tracking-wider">Total Data Points</h4>
-          <div className="text-3xl font-bold text-purple-600 mt-2">
-            {overview.cards.total_events.toLocaleString()}
-          </div>
-          <div className="mt-2 text-xs text-purple-600 bg-purple-50 w-fit px-2 py-1 rounded-full">
-            Raw Events Processed
-          </div>
-        </div>
-      </div>
+                {/* 2. DATE FILTER (STYLE: TIME RANGE BOX - GIỐNG INSPECTOR) */}
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 bg-slate-100 text-slate-600 px-3 py-2 rounded-lg border border-slate-200">
+                    <Calendar size={18} />
+                    <span className="font-bold text-sm">Time Range</span>
+                  </div>
+                  <input
+                    type="date"
+                    className="bg-white border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                  />
+                  <span className="text-slate-400 font-bold">-</span>
+                  <input
+                    type="date"
+                    className="bg-white border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                  />
+                  {(startDate || endDate) && (
+                    <button onClick={() => { setStartDate(''); setEndDate('') }} className="text-red-500 hover:bg-red-50 p-2 rounded-full transition-colors">✕</button>
+                  )}
+                </div>
+              </div>
 
-      {/* 3. CHARTS ROW */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {loading && <span className="text-sm text-blue-500 font-medium animate-pulse flex items-center gap-2">Syncing...</span>}
+            </div>
 
-        {/* CHART 1: TOP BOOSTER ECONOMY (NEW!) */}
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-          <h4 className="font-bold text-slate-700 dark:text-slate-200 mb-4 flex items-center gap-2">
-            <Zap className="text-amber-500" size={18} /> Top Selling Boosters (By Revenue)
-          </h4>
-          <div className="h-[300px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={overview.booster_chart} layout="vertical" margin={{ top: 5, right: 30, left: 40, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-                <XAxis type="number" hide />
-                <YAxis dataKey="name" type="category" width={100} tick={{ fontSize: 12 }} />
-                <RechartsTooltip
-                  contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                  formatter={(value: any) => [`${value.toLocaleString()} Coins`, 'Revenue']}
-                />
-                <Bar dataKey="total_spent" fill="#f59e0b" radius={[0, 4, 4, 0]} barSize={20}>
-                  {overview.booster_chart.map((entry: any, index: number) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+            {/* KPI CARDS - LAYOUT 4 THẺ */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
 
-        {/* CHART 2: EVENT FREQUENCY (EXISTING) */}
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-          <h4 className="font-bold text-slate-700 dark:text-slate-200 mb-4 flex items-center gap-2">
-            <BarChart3 className="text-blue-500" size={18} /> Event Frequency Overview
-          </h4>
-          <div className="h-[300px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={overview.chart_main} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-15} textAnchor="end" height={60} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                <Bar dataKey="value" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={40} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+              {/* 1. IAP Revenue */}
+              <StatCard
+                title="IAP Revenue"
+                value={`${(data?.overview?.cards?.revenue || 0).toLocaleString()} currency`}
+                icon={Banknote}
+                color="bg-emerald-100 text-emerald-600"
+              />
 
-      </div>
+              {/* 2. Total Plays (Đã fix lỗi crash active_users) */}
+              <StatCard
+                title="Total Plays"
+                value={`${(data?.overview?.cards?.active_users || 0).toLocaleString()} sessions`}
+                icon={Users}
+                color="bg-blue-100 text-blue-600"
+              />
+
+              {/* 3. COIN SINK (Tiền ảo) */}
+              <StatCard
+                title="Coins Spent" // Đổi tên: Tiêu Coin
+                value={`${(data?.overview?.cards?.total_spent || 0).toLocaleString()} coin`}
+                icon={Coins} // Icon tiền xu vàng
+                color="bg-amber-100 text-amber-600" // Màu vàng cho Coin
+              />
+
+              {/* 4. Avg Fail Rate (Ưu tiên lấy từ Backend cho chính xác) */}
+              <StatCard
+                title="Avg Fail Rate"
+                value={`${data?.overview?.cards?.avg_fail_rate || 0} %`}
+                icon={Activity}
+                color="bg-red-100 text-red-600"
+              />
+
+            </div>
+
+            {/* CHARTS */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div className="flex justify-between items-center mb-6">
+                  <div><h4 className="font-bold text-lg text-slate-800 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Game Balance</h4><p className="text-xs text-slate-500">Fail Rate vs Revenue Correlation</p></div>
+                  <div className="flex gap-3 text-[10px] font-bold uppercase"><div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-amber-400"></div> Revenue</div><div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-red-500"></div> Fail Rate</div></div>
+                </div>
+                <div className="h-[350px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={strategicData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                      <XAxis dataKey="name" tick={{ fontSize: 10 }} height={50} angle={-30} textAnchor="end" />
+                      <YAxis yAxisId="left" orientation="left" stroke="#d97706" tick={{ fontSize: 10 }} tickFormatter={(val) => val >= 1000 ? `${val / 1000}k` : val} />
+                      <YAxis yAxisId="right" orientation="right" stroke="#ef4444" domain={[0, 100]} tick={{ fontSize: 10 }} unit="%" />
+                      <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                      <Bar yAxisId="left" dataKey="revenue" fill="#fbbf24" barSize={12} radius={[4, 4, 0, 0]} name="Revenue" />
+                      <Line yAxisId="right" type="monotone" dataKey="fail_rate" stroke="#ef4444" strokeWidth={2} dot={{ r: 2 }} name="Fail Rate" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 shadow-sm">
+                <h4 className="font-bold text-slate-700 mb-2 flex items-center gap-2"><BarChart3 className="text-blue-500" size={18} /> Full Event Distribution</h4>
+                <p className="text-xs text-slate-500 mb-4">Frequency of all recorded events</p>
+                <div className="h-[350px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={data.overview.chart_main} layout="vertical" margin={{ left: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                      <XAxis type="number" tick={{ fontSize: 10 }} />
+                      <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 10 }} interval={0} />
+                      <RechartsTooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '8px' }} />
+                      <Bar dataKey="value" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={12} name="Count" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </>
+        )
+      ) : (
+        <LevelDetailTab appId={selectedApp.id} />
+      )}
     </div>
   );
 }

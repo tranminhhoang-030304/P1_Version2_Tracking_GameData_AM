@@ -9,15 +9,25 @@ import time
 import requests
 import threading
 import random
+import os                       
+from dotenv import load_dotenv
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# --- CẤU HÌNH DATABASE ---
-DB_HOST = "localhost"
-DB_NAME = "p1_gamedata"
-DB_USER = "postgres"
-DB_PASS = "Rose24092001" # Password của bạn
+load_dotenv()
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+# --- 3. SỬA CẤU HÌNH DATABASE (Lấy từ .env) ---
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_NAME = os.getenv("DB_NAME", "p1_gamedata")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS") 
+
+# Kiểm tra an toàn: Nếu không đọc được pass thì báo lỗi
+if not DB_PASS:
+    print("⚠️  CẢNH BÁO: Chưa tìm thấy DB_PASS trong file .env")
 
 # --- CẤU HÌNH HỆ THỐNG ---
 MAX_RETRIES = 18       # Số lần thử lại tối đa cho Auto Worker
@@ -30,6 +40,49 @@ SYSTEM_STATE = {
 }
 SYSTEM_LOCK = threading.Lock() 
 JOB_STOP_EVENTS = {}
+
+def get_app_config(cur, app_id):
+    """
+    Hàm lấy cấu hình động từ Database.
+    Nếu không có, trả về cấu hình mặc định (Fallback) để tránh lỗi.
+    """
+    try:
+        cur.execute("SELECT config_json FROM analytics_config WHERE app_id = %s", (app_id,))
+        row = cur.fetchone()
+        if row and row['config_json']:
+            return row['config_json']
+    except Exception as e:
+        print(f"Config Warning: {e}")
+        # Quan trọng: Nếu query lỗi, phải rollback để không kẹt transaction sau này
+        if cur.connection:
+            cur.connection.rollback()
+
+    # Cấu hình Mặc định (Fallback) nếu chưa setup DB
+    return {
+        "events": {
+            "start": ["missionStart", "missionStart_Daily", "missionStart_WeeklyQuestTutor"],
+            "win": ["missionComplete", "missionComplete_Daily", "missionComplete_WeeklyQuestTutor"],
+            "progress": ["missionProgress"],
+            "fail": ["missionFail", "missionFail_Daily", "missionFail_WeeklyQuestTutor"],
+            "transaction": {
+                "real_currency": ["iapSuccess", "firstIAP"], # <--- Đã thêm dấu phẩy
+                "virtual_currency_exclude": ["iapSuccess", "firstIAP", "iapPurchase", "priceSpendLevel"], # <--- Đã thêm dấu phẩy
+                "offer_and_reward": ["FirstReward", "adsRewardComplete", "iapOfferGet", "dailyReward"]
+            }
+        },
+        "boosters": [ # <--- Sửa ngoặc nhọn { thành ngoặc vuông [
+            {"key": "booster_Hammer", "name": "Hammer 🔨", "type": "booster"},
+            {"key": "booster_Magnet", "name": "Magnet 🧲", "type": "booster"},
+            {"key": "booster_Add", "name": "Add Moves ➕", "type": "booster"},
+            {"key": "booster_Unlock", "name": "Unlock 🔓", "type": "booster"},
+            {"key": "booster_Clear", "name": "Clear 🧹", "type": "booster"},
+            {"key": "revive_boosterClear", "name": "Revive 💖", "type": "revive"}
+        ], # <--- Sửa ngoặc nhọn } thành ngoặc vuông [
+        "currency": {
+            "real": ["VND", "USD", "₫", "$"], # <--- Đã thêm dấu phẩy
+            "virtual": ["Coin"]
+        }
+    }
 
 def smart_parse_json(raw_input):
     """
@@ -926,11 +979,10 @@ def run_etl_api(app_id):
     threading.Thread(target=perform_manual_etl, args=(app_id, run_type, is_demo, retry_job_id)).start()
     return jsonify({"status": "started", "mode": run_type})
 
-# --- [FIXED] ÉP KIỂU TEXT -> JSONB ĐỂ TRÁNH LỖI OPERATOR ---
 @app.route("/dashboard/<int:app_id>", methods=['GET'])
 def get_dashboard(app_id):
     conn = get_db()
-    if not conn: return jsonify({"success": False, "error": "DB Connection failed"})
+    if not conn: return jsonify({"success": False, "error": "DB Connection failed"}), 500
     
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
@@ -938,77 +990,126 @@ def get_dashboard(app_id):
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-       # Chuẩn bị điều kiện lọc ngày (Dùng chung)
-        time_condition = ""
-        params = [app_id]
-        if start_date:
-            time_condition += " AND created_at >= %s"
-            params.append(start_date + " 00:00:00")
-        if end_date:
-            time_condition += " AND created_at <= %s"
-            params.append(end_date + " 23:59:59")
+        # 1. LOAD CONFIG
+        config = get_app_config(cur, app_id)
+        real_events = config.get('events', {}).get('transaction', {}).get('real_currency', [])
+        win_events = config.get('events', {}).get('win', [])
+        fail_events = config.get('events', {}).get('fail', [])
+        real_currency_symbols = config.get('currency', {}).get('real', ['$'])
+        
+        # Lấy danh sách Booster Key
+        booster_config_list = config.get('boosters', [])
+        booster_keys = [b['key'] for b in booster_config_list if 'key' in b]
 
-        # --- QUERY 1: TỔNG EVENT (Đếm trực tiếp, siêu nhanh nhờ Index) ---
+        currency_patterns = [f"%{s}%" for s in real_currency_symbols]
+
+        # 2. FILTER TIME
+        where_clause = "WHERE app_id = %s"; params = [app_id]
+        if start_date: where_clause += " AND event_time >= %s"; params.append(start_date + " 00:00:00")
+        if end_date: where_clause += " AND event_time <= %s"; params.append(end_date + " 23:59:59")
+
+        # 3. QUERY 1: DOANH THU THẬT (REAL REVENUE)
         cur.execute(f"""
-            SELECT COUNT(*) as total FROM event_logs 
-            WHERE app_id = %s {time_condition}
-        """, tuple(params))
+            SELECT COALESCE(SUM(coin_spent), 0)::int as real_revenue
+            FROM view_game_stats_cleaned
+            {where_clause} AND event_name = ANY(%s) AND (raw_json::text ILIKE ANY(%s))
+        """, tuple(params + [real_events, currency_patterns]))
+        real_revenue = cur.fetchone()['real_revenue']
+
+        # 4. QUERY 2: TỔNG TIÊU COIN (VIRTUAL SINK) - [ĐOẠN MỚI]
+        cur.execute(f"""
+            SELECT SUM(
+                CASE 
+                    WHEN coin_spent > 0 THEN coin_spent 
+                    ELSE COALESCE((raw_json->>'coin_price')::int, 0)
+                END
+            )::int as virtual_sink
+            FROM view_game_stats_cleaned
+            {where_clause} AND event_type = 'SPEND' AND NOT (event_name = ANY(%s))
+        """, tuple(params + [real_events]))
+        virtual_sink_data = cur.fetchone()
+        virtual_sink = virtual_sink_data['virtual_sink'] if virtual_sink_data and virtual_sink_data['virtual_sink'] else 0
+
+        # 5. METRICS PHỤ
+        cur.execute(f"SELECT COUNT(*)::int as total FROM view_game_stats_cleaned {where_clause}", tuple(params))
         total_events = cur.fetchone()['total']
         
-        # --- QUERY 2: DOANH THU BOOSTER (Join trực tiếp, KHÔNG parse JSON) ---
-        # Chỉ join dựa trên event_name -> Tận dụng Index -> Nhanh gấp 10 lần
+        # 6. FAIL RATE & TOTAL PLAYS (FIX V64: STRICT MODE - LỌC SẠCH RÁC)
+        # A. Tính Total Plays (Chỉ lấy missionStart của các level thực tế)
+        # Khớp với con số 94k
         cur.execute(f"""
-            SELECT 
-                b.display_name as name,
-                COUNT(*)::int as usage_count,
-                COALESCE(SUM(b.cost), 0)::int as total_spent
-            FROM event_logs e
-            JOIN booster_configs b ON e.event_name = b.booster_event_name
-            WHERE e.app_id = %s {time_condition}
-            GROUP BY b.display_name
-            ORDER BY total_spent DESC
-            LIMIT 5
+            SELECT COUNT(*)::int as count
+            FROM view_game_stats_cleaned
+            {where_clause} 
+            AND level_id != '0' 
+            AND event_name = 'missionStart' 
         """, tuple(params))
-        booster_stats = cur.fetchall()
-        total_revenue = sum(item['total_spent'] for item in booster_stats) if booster_stats else 0
+        total_plays = cur.fetchone()['count'] or 0
 
-        # --- QUERY 3: TOP EVENTS (Group by cột có sẵn) ---
+        # B. Tính Real Fail (Chỉ lấy missionFail, LOẠI BỎ iapOfferClose)
+        # Trước đây ta dùng event_type='FAIL' nên bị dính rác
         cur.execute(f"""
-            SELECT event_name as name, COUNT(*)::int as value
-            FROM event_logs
-            WHERE app_id = %s {time_condition}
-            GROUP BY event_name
-            ORDER BY value DESC
-            LIMIT 5
+            SELECT COUNT(*)::int as count
+            FROM view_game_stats_cleaned
+            {where_clause} 
+            AND level_id != '0' 
+            AND event_name = 'missionFail'
         """, tuple(params))
+        real_fail_count = cur.fetchone()['count'] or 0
+        
+        # C. Tính tỷ lệ chuẩn
+        # Fail Rate = Số lần chết / Số lần bắt đầu chơi
+        fail_rate = round((real_fail_count / total_plays) * 100, 1) if total_plays > 0 else 0.0
+
+        # 7. CHART MAIN
+        cur.execute(f"SELECT event_name as name, COUNT(*)::int as value FROM view_game_stats_cleaned {where_clause} GROUP BY event_name ORDER BY value DESC", tuple(params))
         chart_data = cur.fetchall()
 
-        # --- QUERY 4: ACTIVE USERS (Phần nặng nhất - Để cuối cùng) ---
-        # Chỉ parse JSON cho việc đếm user, không ảnh hưởng các chỉ số kia
-        cur.execute(f"""
-            SELECT COUNT(DISTINCT 
-                COALESCE(
-                    -- Kiểm tra xem trong JSON có key tên là "event_json" không?
-                    -- Dùng toán tử ? của Postgres (An toàn tuyệt đối)
-                    CASE WHEN event_json::jsonb ? 'event_json' 
-                         THEN (event_json::jsonb->>'event_json')::jsonb->>'userID'
-                         ELSE event_json::jsonb->>'userID'
-                    END,
-                    'Guest'
-                )
-            ) as active 
-            FROM event_logs 
-            WHERE app_id = %s {time_condition}
-        """, tuple(params))
-        active_users = cur.fetchone()['active']
+        # 8. BOOSTER REVENUE - [ĐOẠN MỚI QUAN TRỌNG]
+        booster_stats = []
+        if booster_keys:
+            # Bảng giá Hardcode từ kết quả phân tích SQL
+            PRICE_MAP = {
+                "booster_Add": 60, "booster_Magnet": 80, "booster_Clear": 120,
+                "booster_Hammer": 120, "booster_Unlock": 190, "revive_boosterClear": 190
+            }
+
+            cur.execute(f"""
+                SELECT key as booster_key, SUM(value::numeric)::int as usage_count
+                FROM view_game_stats_cleaned
+                CROSS JOIN LATERAL jsonb_each_text(raw_json) as kv(key, value)
+                {where_clause} AND key = ANY(%s) AND value ~ '^[0-9]+$' 
+                GROUP BY key
+            """, tuple(params + [booster_keys]))
+            
+            raw_boosters = cur.fetchall()
+            name_map = {b['key']: b['name'] for b in booster_config_list}
+            
+            for b in raw_boosters:
+                key = b['booster_key']
+                count = b['usage_count']
+                price = PRICE_MAP.get(key, 0)
+                
+                booster_stats.append({
+                    "name": name_map.get(key, key),
+                    # Mẹo: Gán doanh thu vào biến value để biểu đồ vẽ theo doanh thu
+                    # Hoặc giữ nguyên count tùy bạn. Ở đây tôi để count để vẽ cột, và thêm revenue để hiển thị.
+                    "value": count, 
+                    "revenue": count * price,
+                    "price": price
+                })
+            
+            # Sắp xếp theo doanh thu
+            booster_stats.sort(key=lambda x: x['revenue'], reverse=True)
 
         return jsonify({
             "success": True,
             "overview": {
                 "cards": {
-                    "revenue": total_revenue,
-                    "active_users": active_users,
-                    "total_events": total_events
+                    "revenue": real_revenue,     
+                    "active_users": total_plays,
+                    "avg_fail_rate": fail_rate,
+                    "total_spent": virtual_sink  
                 },
                 "chart_main": chart_data,
                 "booster_chart": booster_stats
@@ -1016,112 +1117,362 @@ def get_dashboard(app_id):
         })
 
     except Exception as e:
-        print(f"Error dashboard: {e}")
-        return jsonify({
-            "success": False, 
-            "error": str(e)
-        }), 500
+        print(f"Error dashboard V61: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally: conn.close()
+
+# --- [FIXED] API LẤY LEVEL (NỚI LIMIT LÊN 750) ---
+@app.route("/api/levels/<int:app_id>", methods=['GET'])
+def get_levels(app_id):
+    conn = get_db()
+    if not conn: return jsonify([])
+    try:
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT DISTINCT level_id 
+            FROM view_game_stats_cleaned 
+            WHERE app_id = %s
+              AND level_id ~ '^[0-9]+$'
+        """, (app_id,))
+        
+        rows = cur.fetchall()
+        
+        levels = []
+        for r in rows:
+            try:
+                lvl_str = r[0]
+                lvl_num = int(''.join(filter(str.isdigit, lvl_str)))
+                
+                # [SỬA LẠI]: Nới trần lên <= 750
+                if lvl_num <= 750:
+                    levels.append(lvl_num)
+            except:
+                pass
+        
+        # Sắp xếp tăng dần
+        levels.sort()
+        
+        return jsonify([str(l) for l in levels])
+
+    except Exception as e:
+        print(f"❌ Error getting levels: {e}")
+        return jsonify([])
     finally:
         conn.close()
 
-# --- API MỚI: LẤY CHI TIẾT LEVEL (CHO TAB 2) - [UPDATED: DATE FILTER] ---
 @app.route("/dashboard/<int:app_id>/level-detail", methods=['GET'])
 def get_level_detail(app_id):
-    # 1. Lấy tham số Level & Date từ Frontend
     level_id = request.args.get('level_id')
-    start_date = request.args.get('start_date') # Format: YYYY-MM-DD
-    end_date = request.args.get('end_date')     # Format: YYYY-MM-DD
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
     
-    if not level_id:
-        return jsonify({"success": False, "error": "Thiếu tham số level_id"}), 400
+    try: page = int(request.args.get('page', 1)); limit = int(request.args.get('limit', 50))
+    except: page=1; limit=50
+    offset = (page - 1) * limit
 
     conn = get_db()
-    if not conn: return jsonify({"success": False, "error": "DB Error"}), 500
+    if not conn: return jsonify({"success": False}), 500
     
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        # 2. XÂY DỰNG CÂU ĐIỀU KIỆN ĐỘNG (DYNAMIC WHERE)
-        # Mặc định lọc theo App và Level
-        where_clause = "WHERE app_id = %s AND level_id = %s"
-        params = [app_id, str(level_id)]
         
-        # Nếu có ngày bắt đầu -> Thêm điều kiện >= 00:00:00
+        # Base WHERE
+        where_view = "WHERE app_id = %s AND level_id = %s"
+        params_view = [app_id, str(level_id)]
+        where_analytics = "WHERE app_id = %s AND level_name = %s"
+        params_analytics = [app_id, f"Level {level_id}"] 
+
+        if start_date:
+            where_view += " AND event_time >= %s"
+            params_view.append(start_date + " 00:00:00")
+            where_analytics += " AND created_at >= %s"
+            params_analytics.append(start_date + " 00:00:00")
+        if end_date:
+            where_view += " AND event_time <= %s"
+            params_view.append(end_date + " 23:59:59")
+            where_analytics += " AND created_at <= %s"
+            params_analytics.append(end_date + " 23:59:59")
+
+        # --- METRICS (Giữ nguyên) ---
+        cur.execute(f"""
+            SELECT event_type, COUNT(*)::int as count, COALESCE(SUM(coin_spent), 0)::int as revenue
+            FROM view_game_stats_cleaned
+            {where_view} AND event_type IN ('START', 'FAIL', 'WIN', 'SPEND')
+            AND event_name != 'iapOfferClose'
+            GROUP BY event_type
+        """, tuple(params_view))
+        rows = cur.fetchall()
+        data_map = {r['event_type']: r for r in rows}
+        count_start = data_map.get('START', {}).get('count', 0)
+        count_win = data_map.get('WIN', {}).get('count', 0)
+        count_fail = data_map.get('FAIL', {}).get('count', 0)
+        count_spend = data_map.get('SPEND', {}).get('count', 0)
+        rev_spend = data_map.get('SPEND', {}).get('revenue', 0)
+        real_plays = count_win + count_fail
+        adjusted_start = max(count_start, real_plays)
+        win_rate = round((count_win / real_plays) * 100, 1) if real_plays > 0 else 0
+
+        # 1. Định nghĩa Bảng Giá & Bảng Tên (Hardcode chuẩn)
+        PRICE_MAP = {
+            "Hammer": 120, "Magnet": 80, "Add": 60, 
+            "Unlock": 190, "Clear": 120, "Revive Clear": 190
+        }
+
+        DISPLAY_MAP = { 
+            "Add": "Add Moves ➕", 
+            "Hammer": "Hammer 🔨", 
+            "Magnet": "Magnet 🧲", 
+            "Unlock": "Unlock 🔓", 
+            "Clear": "Clear 🧹", 
+            "Revive Clear": "Revive 💖" 
+        }
+        
+        # 2. Query Database (Chỉ chạy 1 lần duy nhất)
+        cur.execute(f"""
+            SELECT TRIM(INITCAP(REPLACE(REPLACE(key, 'booster', ''), '_', ' '))) as item_name, SUM(value::numeric)::int as usage_count
+            FROM view_game_stats_cleaned
+            CROSS JOIN LATERAL jsonb_each_text(raw_json) as kv(key, value)
+            {where_view} AND event_type IN ('WIN', 'FAIL')
+            AND key ILIKE '%%booster%%' AND value ~ '^[0-9]+$' AND value::numeric > 0
+            GROUP BY key
+        """, tuple(params_view))
+        
+        # 3. Xử lý dữ liệu
+        booster_usage_list = []
+        for row in cur.fetchall():
+            raw_name = row['item_name'] # Tên gốc (VD: Magnet)
+            count = row['usage_count']
+            
+            # A. Lấy tên đẹp có Icon (Nếu không có trong map thì dùng tên gốc)
+            display_name = DISPLAY_MAP.get(raw_name, raw_name)
+            
+            # B. Lấy giá tiền (Dùng tên gốc để so khớp)
+            unit_price = 0
+            if "Hammer" in raw_name: unit_price = PRICE_MAP["Hammer"]
+            elif "Magnet" in raw_name: unit_price = PRICE_MAP["Magnet"]
+            elif "Add" in raw_name: unit_price = PRICE_MAP["Add"]
+            elif "Unlock" in raw_name: unit_price = PRICE_MAP["Unlock"]
+            elif "Clear" in raw_name and "Revive" not in raw_name: unit_price = PRICE_MAP["Clear"]
+            elif "Revive" in raw_name: unit_price = PRICE_MAP["Revive Clear"]
+            
+            booster_usage_list.append({
+                "item_name": display_name, # <--- Đã có icon!
+                "usage_count": count,
+                "revenue": count * unit_price, 
+                "price": unit_price,
+                "type": "Used"
+            })
+
+        # 4. Sắp xếp & Tính tổng (Cho KPI ARPU)
+        booster_usage_list.sort(key=lambda x: x['revenue'], reverse=True)
+        top_item_name = booster_usage_list[0]['item_name'] if booster_usage_list else "None"
+        total_level_revenue = sum(item['revenue'] for item in booster_usage_list)
+
+        cur.execute(f"""SELECT ROUND(AVG(coin_balance) FILTER (WHERE event_type='WIN'), 0)::int as avg_balance_win FROM view_game_stats_cleaned {where_view} AND event_type IN ('WIN', 'FAIL')""", tuple(params_view))
+        wallet_stats = cur.fetchone()
+        top_item_name = booster_usage_list[0]['item_name'] if booster_usage_list and booster_usage_list[0]['usage_count'] > 0 else "None"
+        metrics = { 
+            "total_plays": real_plays, 
+            "win_rate": win_rate, 
+            "arpu": total_level_revenue,  # <--- ĐIỂM SỬA QUAN TRỌNG
+            "avg_balance": wallet_stats.get('avg_balance_win', 0) if wallet_stats else 0, 
+            "top_item": top_item_name 
+        }
+        funnel_data = [ {"event_type": "START", "count": adjusted_start, "revenue": 0}, {"event_type": "WIN", "count": count_win, "revenue": 0}, {"event_type": "SPEND", "count": count_spend, "revenue": rev_spend}, {"event_type": "FAIL", "count": count_fail, "revenue": 0} ]
+        
+        cur.execute(f"""SELECT status, COALESCE(SUM(total_cost), 0)::int as total_cost FROM level_analytics {where_analytics} GROUP BY status""", tuple(params_analytics))
+        cost_rows = cur.fetchall()
+        cost_distribution = []
+        for r in cost_rows:
+            if r['total_cost'] > 0: cost_distribution.append({ "name": "Cost to Win" if r['status'] == 'WIN' else "Wasted on Fail", "value": r['total_cost'] })
+        
+        # 1. Đếm tổng số dòng để phân trang
+        cur.execute(f"SELECT COUNT(*)::int as total FROM view_game_stats_cleaned {where_view}", tuple(params_view))
+        total_logs = cur.fetchone()['total']
+        total_pages = (total_logs + limit - 1) // limit
+
+        # 2. Lấy dữ liệu (Bắt buộc lấy raw_json)
+        cur.execute(f"""
+            SELECT 
+                to_char(event_time, 'HH24:MI:SS DD/MM') as time, 
+                user_id, event_name, coin_spent, 
+                raw_json 
+            FROM view_game_stats_cleaned {where_view}
+            ORDER BY event_time DESC LIMIT %s OFFSET %s
+        """, tuple(params_view + [limit, offset]))
+        
+        raw_logs = cur.fetchall()
+        processed_logs = []
+
+        for row in raw_logs:
+            # A. ÉP KIỂU JSON AN TOÀN (Handle String vs Dict)
+            raw_data = row['raw_json']
+            data = {}
+            
+            if isinstance(raw_data, str):
+                try: data = json.loads(raw_data)
+                except: data = {} 
+            elif isinstance(raw_data, dict):
+                data = raw_data
+            if isinstance(data, list) and len(data) > 0: data = data[0]
+            if not isinstance(data, dict): data = {}
+            data_lower = {k.lower(): v for k, v in data.items()}
+
+            # B. XỬ LÝ USER (CONTEXT)
+            user_display = "Guest"
+            if 'levelID' in data and str(data['levelID']).isdigit(): user_display = f"Guest (Lv.{data['levelID']})"
+            elif 'dayChallenge' in data: user_display = f"Guest (Daily #{data['dayChallenge']})"
+            elif 'packID' in data: user_display = f"Guest (Shop)"
+            
+            # C. XỬ LÝ DETAIL (XÂY DỰNG CHUỖI)
+            details = []
+            
+            # - Shop / Pack
+            if 'packid' in data_lower: 
+                curr = data_lower.get('currencycode', '')
+                amt = data_lower.get('amount', '')
+                details.append(f"📦 Pack: {data_lower['packid']} ({amt} {curr})")
+            
+            # - Progress (Thêm emoji cờ)
+            if 'level_progresspercent' in data_lower: 
+                details.append(f"🚩 Progress: {data_lower['level_progresspercent']}")
+            
+            # - Win/Fail Logic (Thêm tổng số object và dấu X)
+            if 'objectunsolve' in data_lower: 
+                total = data_lower.get('objecttotal', '?')
+                details.append(f"❌ Unsolved: {data_lower['objectunsolve']}/{total}")
+            
+            # - Price (Thêm emoji tag giá)
+            price = data_lower.get('coin_price') or data_lower.get('coinprice') or data_lower.get('cost')
+            if price is not None:
+                try:
+                    p_val = int(price)
+                    if p_val > 0: details.append(f"🏷️ Price: {p_val}")
+                    else: details.append("🏷️ Free")
+                except: pass
+
+            # - Balance (Thêm emoji túi tiền)
+            bal = data_lower.get('coinbalance') or data_lower.get('coin_balance')
+            if bal: details.append(f"💰 Wallet: {bal}")
+            
+            # - Time Play (Mới thêm vào - Quan trọng để biết chơi lâu hay mau)
+            t_play = data_lower.get('timeplay') or data_lower.get('time_play')
+            if t_play: details.append(f"⏱️ Time: {t_play}s")
+
+            # - Boosters (Thêm emoji tia sét)
+            used_boosters = []
+            for k, v in data.items():
+                if 'booster' in k.lower() and str(v).isdigit() and int(v) > 0:
+                    clean_name = k.replace('booster_', '').replace('booster','').capitalize()
+                    used_boosters.append(f"{clean_name} x{v}")
+            if used_boosters: details.append(f"⚡ Used: {', '.join(used_boosters)}")
+
+            # D. CHỐT CHUỖI DETAIL (FALLBACK MODE)
+            detail_str = " | ".join(details)
+            if not detail_str: detail_str = "-"
+            
+            # E. TẠO OBJECT TRẢ VỀ (BẮN ĐA ĐIỂM VÀO MỌI BIẾN)
+            processed_logs.append({
+                "time": row['time'],
+                "user_id": user_display,
+                "event_name": row['event_name'],
+                "coin_spent": row['coin_spent'],
+                "item_name": detail_str 
+            })
+
+        return jsonify({
+            "success": True,
+            "metrics": metrics, "funnel": funnel_data, "booster_usage": booster_usage_list, "cost_distribution": cost_distribution,
+            "logs": { 
+                "data": processed_logs, 
+                "pagination": { "current": page, "total_pages": total_pages, "total_records": total_logs } 
+            }
+        })
+
+    except Exception as e:
+        print(f"Level Detail Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally: conn.close()
+
+@app.route("/dashboard/<int:app_id>/strategic", methods=['GET'])
+def get_strategic_overview(app_id):
+    conn = get_db()
+    if not conn: return jsonify({"success": False, "error": "DB Connection failed"}), 500
+
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        config = get_app_config(cur, app_id)
+        real_events = config.get('events', {}).get('transaction', {}).get('real_currency', [])
+        
+        where_clause = "WHERE app_id = %s AND level_id IS NOT NULL"
+        params = [app_id]
         if start_date:
             where_clause += " AND event_time >= %s"
             params.append(start_date + " 00:00:00")
-            
-        # Nếu có ngày kết thúc -> Thêm điều kiện <= 23:59:59
         if end_date:
             where_clause += " AND event_time <= %s"
             params.append(end_date + " 23:59:59")
 
-        # --- QUERY 1: METRICS CARDS (C1) ---
-        # Lưu ý: Dùng f-string để chèn where_clause, còn params truyền qua tuple để bảo mật
+        # QUERY V70: Đưa điều kiện lọc vào trong FILTER để an toàn hơn
         cur.execute(f"""
             SELECT 
-                COUNT(*) FILTER (WHERE event_type = 'START') as total_plays,
-                ROUND(
-                    (COUNT(*) FILTER (WHERE event_type = 'WIN')::numeric / 
-                    NULLIF(COUNT(*) FILTER (WHERE event_type IN ('WIN', 'FAIL')), 0)) * 100, 
-                1)::float as win_rate,
-                ROUND(SUM(coin_spent)::numeric / NULLIF(COUNT(DISTINCT user_id), 0), 0)::int as arpu
+                level_id,
+                COUNT(*) FILTER (WHERE event_type = 'START')::int as total_plays,
+                -- Chỉ đếm Fail nếu KHÔNG PHẢI là iapOfferClose
+                COUNT(*) FILTER (WHERE event_type = 'FAIL' AND (event_name != 'iapOfferClose' OR event_name IS NULL))::int as fail_count,
+                COALESCE(SUM(coin_spent) FILTER (WHERE event_name = ANY(%s)), 0)::float as revenue
             FROM view_game_stats_cleaned
             {where_clause}
-        """, tuple(params))
-        metrics = cur.fetchone()
+            GROUP BY level_id
+        """, (real_events,) + tuple(params))
+        
+        rows = cur.fetchall()
+        
+        balance_chart = []
+        for r in rows:
+            lvl_str = str(r['level_id'])
+            digits = ''.join(filter(str.isdigit, lvl_str))
+            
+            if digits:
+                lvl_num = int(digits)
+                if lvl_num <= 750: 
+                    plays = r['total_plays']
+                    fails = r['fail_count']
+                    rev = r['revenue']
+                    
+                    if plays > 0:
+                        fail_rate = round((fails / plays) * 100, 1)
+                        if fail_rate > 100: fail_rate = 100.0
+                    else:
+                        fail_rate = 0.0
+                    
+                    display_name = f"Lv.{lvl_num}"
+                    if lvl_num == 0: display_name = "Lobby/Tut"
 
-        # --- QUERY 2: TOP ITEM ---
-        cur.execute(f"""
-            SELECT item_name, COUNT(*) as quantity 
-            FROM view_game_stats_cleaned 
-            {where_clause} AND event_type = 'SPEND'
-            GROUP BY item_name 
-            ORDER BY quantity DESC 
-            LIMIT 1
-        """, tuple(params))
-        top_item = cur.fetchone()
-        metrics['top_item'] = top_item['item_name'] if top_item else "Không có"
+                    if plays > 0 or rev > 0:
+                        balance_chart.append({
+                            "name": display_name,
+                            "level_index": lvl_num,
+                            "revenue": rev,
+                            "fail_rate": fail_rate,
+                            "plays": plays
+                        })
 
-        # --- QUERY 3: PHỄU CHẾT (FUNNEL C2) ---
-        cur.execute(f"""
-            SELECT event_type, COUNT(*) as count, SUM(coin_spent) as revenue
-            FROM view_game_stats_cleaned
-            {where_clause}
-            GROUP BY event_type
-            ORDER BY count DESC
-        """, tuple(params))
-        funnel_data = cur.fetchall()
-
-        # --- QUERY 4: LOGS (D) ---
-        cur.execute(f"""
-            SELECT 
-                to_char(event_time, 'HH24:MI:SS DD/MM') as time,
-                user_id,
-                event_name,
-                item_name,
-                coin_spent
-            FROM view_game_stats_cleaned
-            {where_clause}
-            ORDER BY event_time DESC
-            LIMIT 100
-        """, tuple(params))
-        logs_data = cur.fetchall()
+        balance_chart.sort(key=lambda x: x['level_index'])
 
         return jsonify({
             "success": True,
-            "level_id": level_id,
-            "filter": {"start": start_date, "end": end_date}, # Trả về để Frontend biết đang lọc gì
-            "metrics": metrics, 
-            "funnel": funnel_data, 
-            "logs": logs_data      
+            "balance_chart": balance_chart
         })
 
     except Exception as e:
-        print(f"❌ Level Detail Error: {e}")
+        print(f"Strategic Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        conn.close()
+    finally: conn.close()
 
 # --- BỔ SUNG API: XÓA 1 DÒNG & STOP JOB ---
 @app.route("/monitor/history/<int:id>", methods=['DELETE'])
@@ -1164,7 +1515,7 @@ def stop_etl_process(hist_id):
         return jsonify({"success": False, "error": str(e)}), 500
     finally: conn.close()
 
-# --- [FIXED] SỬA TÊN CỘT CONFIG CHO KHỚP DB ---
+# --- [V41 FIX] API CẤU HÌNH ĐỘNG (DÙNG JSON DB) ---
 @app.route("/apps/<int:app_id>/analytics-config", methods=['GET', 'POST'])
 def handle_analytics_config(app_id):
     conn = get_db()
@@ -1173,72 +1524,42 @@ def handle_analytics_config(app_id):
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
+        # --- 1. LẤY CẤU HÌNH (GET) ---
         if request.method == 'GET':
-            cur.execute("""
-                SELECT level_start_event as level_start, 
-                       level_win_event as level_win, 
-                       level_fail_event as level_fail
-                FROM analytics_config WHERE app_id = %s
-            """, (app_id,))
-            event_row = cur.fetchone()
+            # Query mới: Chỉ lấy cột config_json
+            cur.execute("SELECT config_json FROM analytics_config WHERE app_id = %s", (app_id,))
+            row = cur.fetchone()
             
-            # [FIX QUAN TRỌNG] Dùng booster_event_name và cost
-            cur.execute("""
-                SELECT booster_event_name as event_name, display_name, cost as coin_cost
-                FROM booster_configs WHERE app_id = %s
-            """, (app_id,))
-            booster_rows = cur.fetchall()
-            
-            response_data = {
-                "events": event_row if event_row else {"level_start": "", "level_win": "", "level_fail": ""},
-                "boosters": booster_rows if booster_rows else []
-            }
-            return jsonify(response_data)
+            if row and row['config_json']:
+                # Trả về JSON chuẩn cho Frontend
+                return jsonify(row['config_json'])
+            else:
+                # Nếu chưa có trong DB, trả về config mặc định từ hàm get_app_config
+                # (Lưu ý: Bạn phải đảm bảo hàm get_app_config ở đầu file đã sửa tên bảng thành analytics_config nhé)
+                return jsonify(get_app_config(cur, app_id))
 
+        # --- 2. LƯU CẤU HÌNH (POST) ---
         elif request.method == 'POST':
-            payload = request.json
-            events = payload.get('events', {})
-            boosters = payload.get('boosters', [])
+            new_config = request.json # Frontend gửi lên toàn bộ cục JSON settings
             
-            # Upsert analytics_config (Giữ nguyên)
+            # Chuyển Dict thành String JSON để lưu vào DB
+            config_str = json.dumps(new_config)
+
+            # Lưu thẳng vào cột config_json (Gọn nhẹ hơn logic cũ rất nhiều)
             cur.execute("""
-                INSERT INTO analytics_config (app_id, level_start_event, level_win_event, level_fail_event, updated_at)
-                VALUES (%s, %s, %s, %s, NOW())
+                INSERT INTO analytics_config (app_id, config_json, updated_at)
+                VALUES (%s, %s, NOW())
                 ON CONFLICT (app_id) DO UPDATE SET 
-                    level_start_event = EXCLUDED.level_start_event,
-                    level_win_event = EXCLUDED.level_win_event,
-                    level_fail_event = EXCLUDED.level_fail_event,
+                    config_json = EXCLUDED.config_json,
                     updated_at = NOW()
-            """, (app_id, events.get('level_start', ''), events.get('level_win', ''), events.get('level_fail', '')))
-            
-            # Update booster_configs (Xóa đi insert lại)
-            cur.execute("DELETE FROM booster_configs WHERE app_id = %s", (app_id,))
-            
-            if boosters:
-                values = []
-                for b in boosters:
-                    values.append((
-                        app_id, 
-                        b.get('event_name', ''), # Frontend gửi lên là event_name
-                        b.get('display_name', ''), 
-                        int(b.get('coin_cost', 0)) # Frontend gửi lên là coin_cost
-                    ))
-                
-                # [FIX QUAN TRỌNG] Insert vào đúng cột booster_event_name và cost
-                query = """
-                    INSERT INTO booster_configs (app_id, booster_event_name, display_name, cost, created_at)
-                    VALUES (%s, %s, %s, %s, NOW())
-                """
-                cur_batch = conn.cursor()
-                cur_batch.executemany(query, values)
-                cur_batch.close()
+            """, (app_id, config_str))
             
             conn.commit()
-            return jsonify({"success": True, "msg": "Configuration Saved Successfully"})
+            return jsonify({"success": True, "msg": "Configuration Saved Successfully (V40 JSON Mode)"})
             
     except Exception as e:
         print(f"❌ Analytics Config Error: {e}")
-        conn.rollback()
+        conn.rollback() # Chống kẹt transaction
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         conn.close()
