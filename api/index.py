@@ -431,17 +431,19 @@ def worker_process_jobs():
             log("❌ Error: App not found or deleted.")
             update_job_status(job_id, 'failed', 'App deleted')
             return
-
+        
+        clean_app_id = str(app_info['app_id']).strip()
+        clean_token = str(app_info['api_token']).strip()
         # Gọi API AppMetrica
         url = "https://api.appmetrica.yandex.com/logs/v1/export/events.json"
         params = {
-            "application_id": app_info['app_id'],
+            "application_id": clean_app_id,
             "date_since": str(job['date_since']), 
             "date_until": str(job['date_until']),
             "fields": "event_name,event_timestamp,event_json",
             "limit": 1000000 
         }
-        headers = {"Authorization": f"OAuth {app_info['api_token']}"}
+        headers = {"Authorization": f"OAuth {clean_token}"}
 
         log(f"  📡 Connecting to AppMetrica...")
         response = requests.get(url, params=params, headers=headers, stream=True, timeout=600)
@@ -705,16 +707,18 @@ def perform_manual_etl(app_id, run_type='manual', is_demo=False, retry_job_id=No
 
         log(f" 🕒 Scanning Window: {date_since} -> {date_until}")
         
+        clean_app_id = str(app['app_id']).strip()
+        clean_token = str(app['api_token']).strip()
         # 4. GỌI API APPMETRICA
         url = "https://api.appmetrica.yandex.com/logs/v1/export/events.json"
         params = {
-            "application_id": app['app_id'],
+            "application_id": clean_app_id,
             "date_since": date_since,
             "date_until": date_until,
             "fields": "event_name,event_timestamp,event_json",
             "limit": 1000000
         }
-        headers = {"Authorization": f"OAuth {app['api_token']}"}
+        headers = {"Authorization": f"OAuth {clean_token}"}
         
         status = "Failed"
         total_events = 0
