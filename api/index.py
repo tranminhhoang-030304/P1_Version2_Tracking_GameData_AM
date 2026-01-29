@@ -11,6 +11,7 @@ import threading
 import random
 import os                       
 from dotenv import load_dotenv
+import re
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -40,6 +41,41 @@ SYSTEM_STATE = {
 }
 SYSTEM_LOCK = threading.Lock() 
 JOB_STOP_EVENTS = {}
+
+def universal_flatten(raw_input):
+    """
+    Hàm V95: Khoan sâu vào mọi ngóc ngách của JSON (Hỗ trợ n lớp lồng nhau).
+    Trả về: Một dictionary phẳng chứa tất cả thông tin.
+    """
+    if not raw_input: return {}
+    
+    data = {}
+    # Lớp 1: Parse từ DB (thường là string hoặc dict)
+    try:
+        if isinstance(raw_input, str):
+            data = json.loads(raw_input)
+        elif isinstance(raw_input, dict):
+            data = raw_input.copy()
+    except: return {}
+
+    # Lớp 2: Kiểm tra các key chứa JSON lồng nhau thường gặp
+    # Game 2 thường nhét dữ liệu vào key 'event_json' hoặc 'params'
+    nested_keys = ['event_json', 'params', 'data', 'attributes']
+    
+    for key in nested_keys:
+        if key in data and isinstance(data[key], str):
+            try:
+                inner = json.loads(data[key])
+                if isinstance(inner, dict):
+                    data.update(inner) # Gộp dữ liệu con ra ngoài
+            except: pass
+            
+    # Lớp 3: Xử lý Double Encode (Trường hợp chuỗi bị mã hóa 2 lần)
+    if isinstance(data, str): 
+        try: data = json.loads(data)
+        except: pass
+        
+    return data if isinstance(data, dict) else {}
 
 def get_app_config(cur, app_id):
     """
@@ -214,21 +250,16 @@ def transform_events_to_level_analytics(app_id, events):
     for e in events:
         try:
             event_name = e.get("event_name")
-            
-            # --- [SỬA ĐỔI QUAN TRỌNG TẠI ĐÂY] ---
-            # Thay vì json.loads đơn thuần, ta dùng hàm thông minh
             raw_json = smart_parse_json(e.get("event_json"))
-            # ------------------------------------
-
-            level_id = raw_json.get("levelID") or raw_json.get("missionID")
-            user_id = raw_json.get("userID") or "Guest"
-            
+            level_id = (raw_json.get("levelID") or 
+                        raw_json.get("missionID") or 
+                        raw_json.get("level_display") or 
+                        raw_json.get("level_display_origin"))
+            user_id = (raw_json.get("userID") or "Guest" or
+                       raw_json.get("uuid"))
             # Nếu vẫn không lấy được level_id, bỏ qua event này
-            if not level_id:
-                continue
-
+            if not level_id: continue
             session_key = f"{user_id}_{level_id}"
-            
             # Timestamp xử lý an toàn
             try:
                 ts_val = int(e.get("event_timestamp"))
@@ -619,13 +650,8 @@ def run_scheduler_loop():
         
         time.sleep(60)
 
-# ==========================================
 # PHẦN 4: LOGIC CHẠY TAY (MANUAL) - [FIXED RETRY LOGIC]
-# ==========================================
 def perform_manual_etl(app_id, run_type='manual', is_demo=False, retry_job_id=None):
-    """
-    Hàm xử lý chạy tay (Manual), Demo và RETRY CHUẨN XÁC.
-    """
     if is_system_busy():
         print(f"❌ System BUSY. Skip run for App {app_id}.")
         return
@@ -637,7 +663,7 @@ def perform_manual_etl(app_id, run_type='manual', is_demo=False, retry_job_id=No
         conn = get_db()
         if not conn: return
         
-        # 1. TẠO HISTORY RECORD
+        # 1. TẠO RECORD HISTORY
         msg_start = f"🚀 Starting {run_type.upper()} run..."
         if retry_job_id: msg_start += f" (Retry of Job #{retry_job_id})"
         
@@ -650,11 +676,9 @@ def perform_manual_etl(app_id, run_type='manual', is_demo=False, retry_job_id=No
         hist_id = cur.fetchone()[0]
         conn.commit()
         
-        # [MỚI] TẠO CỜ DỪNG CHO JOB NÀY
         stop_event = threading.Event()
         JOB_STOP_EVENTS[hist_id] = stop_event
 
-        # Hàm log helper
         def log(msg):
             print(msg)
             append_log_to_db(hist_id, msg)
@@ -666,50 +690,70 @@ def perform_manual_etl(app_id, run_type='manual', is_demo=False, retry_job_id=No
         
         if not app:
             log("❌ Error: App ID not found.")
-            return
+            cur.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
+            conn.commit()
+            return 
 
-        # 3. CẤU HÌNH THỜI GIAN (LOGIC QUAN TRỌNG ĐÃ SỬA)
+        # 3. CẤU HÌNH THỜI GIAN
         date_since = None
         date_until = None
         
-        # --- CASE 1: RETRY (Lấy giờ từ Job cũ) ---
+        # --- CASE 1: STRICT RETRY (Logic V85 - Vét cạn Regex) ---
         if run_type == 'retry' and retry_job_id:
-            cur.execute("SELECT start_time FROM job_history WHERE id = %s", (retry_job_id,))
-            old_job = cur.fetchone()
-            if old_job and old_job['start_time']:
-                target_time = old_job['start_time']
-                # Tính lại cửa sổ theo đúng logic cũ (thường là 1 tiếng trước đó)
-                # Giả sử chu kỳ chuẩn là 60 phút + 5 phút dư
-                fix_to = target_time
-                fix_from = target_time - timedelta(minutes=65)
+            cur.execute("SELECT logs, start_time FROM job_history WHERE id = %s", (retry_job_id,))
+            old_row = cur.fetchone()
+            
+            if old_row and old_row['logs']:
+                logs = old_row['logs']
                 
-                date_until = fix_to.strftime('%Y-%m-%d %H:%M:%S')
-                date_since = fix_from.strftime('%Y-%m-%d %H:%M:%S')
-                log(f"🔙 RETRY MODE: Lùi thời gian về quá khứ theo Job #{retry_job_id}")
-            else:
-                log(f"⚠️ Không tìm thấy Job cũ #{retry_job_id}, chuyển sang Manual Mode.")
+                # A. Tìm 2 chuỗi ngày giờ đầy đủ (YYYY-MM-DD HH:MM:SS)
+                # Bất kể nó nằm trong dấu [], (), hay sau dấu :
+                full_timestamps = re.findall(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", logs)
+                
+                if len(full_timestamps) >= 2:
+                    # Lấy 2 mốc cuối cùng tìm được (Thường là Scanning Window)
+                    date_since = full_timestamps[-2]
+                    date_until = full_timestamps[-1]
+                    log(f"🔙 RETRY V85: Found exact window: {date_since} -> {date_until}")
+                
+                # B. Nếu không có ngày, tìm 2 chuỗi giờ (HH:MM)
+                elif old_row['start_time']:
+                    short_times = re.findall(r"(\d{2}:\d{2})", logs)
+                    if len(short_times) >= 2:
+                        # Lấy ngày gốc của Job cũ
+                        base_date = old_row['start_time'].strftime('%Y-%m-%d')
+                        # Ghép ngày + giờ tìm được
+                        # Lưu ý: short_times có thể bắt nhầm giờ trong log message, nên lấy 2 cái cuối
+                        date_since = f"{base_date} {short_times[-2]}:00"
+                        date_until = f"{base_date} {short_times[-1]}:00"
+                        log(f"🔙 RETRY V85 (Short): Reconstructed: {date_since} -> {date_until}")
 
-        # --- CASE 2: DEMO / MANUAL (Nếu không phải Retry hoặc Retry lỗi) ---
+            # [STRICT MODE] Nếu vẫn không tìm thấy -> BÁO LỖI
+            if not date_since:
+                log(f"❌ RETRY FAILED: Cannot find time patterns in logs of Job #{retry_job_id}.")
+                cur.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
+                conn.commit()
+                return
+
+        # --- CASE 2: DEMO / MANUAL ---
         if not date_since:
             now = datetime.now()
-            if run_type == 'demo':
-                delay_minutes = 45; duration_minutes = 15
-                log(f"🧪 DEMO MODE: Target Time = NOW - {delay_minutes}m")
-            else:
-                delay_minutes = 60; duration_minutes = 30
-                log(f"⚙️ MANUAL MODE: Target Time = NOW - {delay_minutes}m")
-
+            delay_minutes = 45 if run_type == 'demo' else 90
+            duration_minutes = 15 if run_type == 'demo' else 60
+            
             end_dt = now - timedelta(minutes=delay_minutes)
             start_dt = end_dt - timedelta(minutes=duration_minutes)
             
             date_since = start_dt.strftime('%Y-%m-%d %H:%M:%S')
             date_until = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+            log(f"⚙️ MANUAL MODE: {date_since} -> {date_until}")
 
         log(f" 🕒 Scanning Window: {date_since} -> {date_until}")
         
+        # 4. GỌI API APPMETRICA (Dùng .strip() an toàn)
         clean_app_id = str(app['app_id']).strip()
         clean_token = str(app['api_token']).strip()
-        # 4. GỌI API APPMETRICA
+
         url = "https://api.appmetrica.yandex.com/logs/v1/export/events.json"
         params = {
             "application_id": clean_app_id,
@@ -720,128 +764,50 @@ def perform_manual_etl(app_id, run_type='manual', is_demo=False, retry_job_id=No
         }
         headers = {"Authorization": f"OAuth {clean_token}"}
         
-        status = "Failed"
-        total_events = 0
-        max_retries = 18 # Giảm xuống 18 để tránh spam, vì ta đã tăng thời gian chờ
+        status = "Failed"; total_events = 0
         
-        for i in range(max_retries):
-            # [MỚI] KIỂM TRA CỜ DỪNG ĐẦU VÒNG LẶP
+        for i in range(18): # 18 retries
             if stop_event.is_set():
                 log("🛑 USER STOPPED PROCESS.")
-                status = "Cancelled"
-                break
+                status = "Cancelled"; break
 
-            log(f"📡 Requesting AppMetrica (Attempt {i+1}/{max_retries})...")
+            log(f"📡 Requesting AppMetrica (Attempt {i+1}/18)...")
             resp = requests.get(url, params=params, headers=headers)
             
             if resp.status_code == 200:
                 data = resp.json().get('data', [])
                 total_events = len(data)
                 log(f"✅ Success! Received {total_events} events. Importing...")
-                try:
-                    # Tách riêng connection cho việc insert để an toàn
-                    conn_insert = get_db()
-                    cur_insert = conn_insert.cursor()
-                    
-                    # Dùng Batch Insert (Executemany) cho nhanh và ít lỗi hơn insert từng dòng
-                    values = []
-                    for d in data:
-                        evt_json = json.dumps(d)
-                        try: ts = datetime.fromtimestamp(int(d.get('event_timestamp')))
-                        except: ts = datetime.now()
-                        
-                        values.append((
-                            app_id, 
-                            d.get('event_name', 'unknown'), 
-                            evt_json, 
-                            1, 
-                            ts
-                        ))
-                    
-                    # Thực hiện Insert 1 lần
-                    query = """
-                        INSERT INTO event_logs (app_id, event_name, event_json, count, created_at) 
-                        VALUES (%s, %s, %s, %s, %s)
-                    """
-                    cur_insert.executemany(query, values)
-                    conn_insert.commit()
-                    conn_insert.close()
-                    
-                    # QUAN TRỌNG: Gán status Success sau khi insert thành công
-                    status = "Success"
-                    log(f"🎉 Done. Imported {total_events} events to DB.")
-                    
-                except Exception as e_insert:
-                    log(f"❌ DB Insert Error: {str(e_insert)}")
-                    status = "Failed" # Đánh dấu fail nếu lỗi DB
-
-                break
                 
-                # Insert vào DB
-                conn_insert = get_db()
-                cur_insert = conn_insert.cursor()
+                conn_insert = get_db(); cur_insert = conn_insert.cursor()
+                values = []
                 for d in data:
-                    evt_json = json.dumps(d)
                     try: ts = datetime.fromtimestamp(int(d.get('event_timestamp')))
                     except: ts = datetime.now()
-                    cur_insert.execute("INSERT INTO event_logs (app_id, event_name, event_json, count, created_at) VALUES (%s, %s, %s, 1, %s)", 
-                                (app_id, d.get('event_name'), evt_json, ts))
-                conn_insert.commit()
-                conn_insert.close()
+                    values.append((app_id, d.get('event_name', 'unknown'), json.dumps(d), 1, ts))
                 
-                status = "Success"
-                log(f"🎉 Done. Imported {total_events} events.")
-                break
+                cur_insert.executemany("INSERT INTO event_logs (app_id, event_name, event_json, count, created_at) VALUES (%s,%s,%s,%s,%s)", values)
+                conn_insert.commit(); conn_insert.close()
+                
+                status = "Success"; log(f"🎉 Done. Imported {total_events} events."); break
             
             elif resp.status_code == 202:
-                # Tăng thời gian chờ lên 3 phút
-                log(f"⏳ Server 202 (Preparing Data). Waiting 180s...")
-                if stop_event.wait(180): 
-                    log("🛑 Stop Signal received while waiting.")
-                    status = "Cancelled"
-                    break
-            
-            elif resp.status_code == 429:
-                # Xử lý 429 thông minh: Dừng ngay lập tức
-                error_text = resp.text
-                log(f"⛔ BỊ CHẶN (429)! Server message: {error_text}")
-                status = "Failed"
-                break # Thoát vòng lặp ngay
-            
+                log(f"⏳ Server 202. Waiting 180s..."); 
+                if stop_event.wait(180): status = "Cancelled"; break
             else:
-                log(f"❌ Error {resp.status_code}: {resp.text}")
-                status = "Failed"
-                if stop_event.wait(30): break
-        else:
-            log("❌ Timeout: AppMetrica did not return data after max retries.")
-            status = "Failed"
+                log(f"❌ Error {resp.status_code}"); status = "Failed"; break
+        
+        # Cập nhật kết quả cuối cùng
+        conn_end = get_db(); cur_end = conn_end.cursor()
+        cur_end.execute("UPDATE job_history SET end_time=NOW(), status=%s, total_events=%s WHERE id=%s", (status, total_events, hist_id))
+        conn_end.commit(); conn_end.close()
     
     except Exception as e:
         log(f"❌ Critical Error: {str(e)}")
-        status = "Failed"
-    
     finally:
-        # Dọn dẹp cờ
-        if hist_id and hist_id in JOB_STOP_EVENTS:
-            del JOB_STOP_EVENTS[hist_id]
         set_system_busy(False)
-        if hist_id:
-            try:
-                conn_end = get_db()
-                cur_end = conn_end.cursor()
-                cur_end.execute("""
-                    UPDATE job_history 
-                    SET end_time=NOW(), status=%s, total_events=%s 
-                    WHERE id=%s
-                """, (status, total_events, hist_id))
-                conn_end.commit()
-                conn_end.close()
-            except: pass
 
-# ==========================================
 # PHẦN 5: API ENDPOINTS (ĐÃ CẬP NHẬT DASHBOARD)
-# ==========================================
-
 @app.route("/monitor/history", methods=['GET'])
 def get_history():
     app_id = request.args.get('app_id') 
@@ -994,123 +960,116 @@ def get_dashboard(app_id):
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # 1. LOAD CONFIG
-        config = get_app_config(cur, app_id)
-        real_events = config.get('events', {}).get('transaction', {}).get('real_currency', [])
-        win_events = config.get('events', {}).get('win', [])
-        fail_events = config.get('events', {}).get('fail', [])
-        real_currency_symbols = config.get('currency', {}).get('real', ['$'])
+        # 1. KHỞI TẠO BIẾN AN TOÀN (FIX LỖI 'variable not defined')
+        booster_config_list = [] 
+        real_events = ["iapSuccess", "firstIAP", "iapPurchase"]
+        start_events = ["missionStart", "missionStart_Daily", "level_start", "level_loading_start", "level_first_start"]
+        fail_events = ["missionFail", "missionFail_Daily", "level_fail", "level_lose"]
         
-        # Lấy danh sách Booster Key
-        booster_config_list = config.get('boosters', [])
-        booster_keys = [b['key'] for b in booster_config_list if 'key' in b]
+        try:
+            config = get_app_config(cur, app_id)
+            if config:
+                # Cập nhật nếu config có dữ liệu
+                c_booster = config.get('boosters')
+                if isinstance(c_booster, list): booster_config_list = c_booster
+                
+                c_real = config.get('events', {}).get('transaction', {}).get('real_currency')
+                if c_real: real_events = c_real
+        except: pass
 
-        currency_patterns = [f"%{s}%" for s in real_currency_symbols]
+        # Lấy danh sách key booster
+        booster_keys = [b['key'] for b in booster_config_list if isinstance(b, dict) and 'key' in b]
+        if not booster_keys:
+            booster_keys = ["booster_Hammer", "booster_Magnet", "booster_Add", "booster_Unlock", "booster_Clear", "revive_boosterClear", "booster_bubble", "booster_shuffle", "booster_ufo"]
 
         # 2. FILTER TIME
-        where_clause = "WHERE app_id = %s"; params = [app_id]
-        if start_date: where_clause += " AND event_time >= %s"; params.append(start_date + " 00:00:00")
-        if end_date: where_clause += " AND event_time <= %s"; params.append(end_date + " 23:59:59")
+        where_clause = "WHERE app_id = %s"
+        params = [app_id]
+        if start_date: 
+            where_clause += " AND created_at >= %s"
+            params.append(start_date + " 00:00:00")
+        if end_date: 
+            where_clause += " AND created_at <= %s"
+            params.append(end_date + " 23:59:59")
 
-        # 3. QUERY 1: DOANH THU THẬT (REAL REVENUE)
-        cur.execute(f"""
-            SELECT COALESCE(SUM(coin_spent), 0)::int as real_revenue
-            FROM view_game_stats_cleaned
-            {where_clause} AND event_name = ANY(%s) AND (raw_json::text ILIKE ANY(%s))
-        """, tuple(params + [real_events, currency_patterns]))
+        # 3. DOANH THU (Regex Extract)
+        cur.execute(r"""
+            SELECT COALESCE(SUM(
+                COALESCE(SUBSTRING(event_json FROM '"coin_spent"\s*:\s*"?(\d+)"?')::numeric, 0)
+            ), 0)::int as real_revenue
+            FROM event_logs
+            """ + where_clause + r""" 
+            AND event_name = ANY(%s) 
+        """, tuple(params + [real_events]))
         real_revenue = cur.fetchone()['real_revenue']
 
-        # 4. QUERY 2: TỔNG TIÊU COIN (VIRTUAL SINK) - [ĐOẠN MỚI]
-        cur.execute(f"""
+        # 4. TỔNG TIÊU COIN (Regex Extract)
+        cur.execute(r"""
             SELECT SUM(
-                CASE 
-                    WHEN coin_spent > 0 THEN coin_spent 
-                    ELSE COALESCE((raw_json->>'coin_price')::int, 0)
-                END
+                 COALESCE(SUBSTRING(event_json FROM '"coin_spent"\s*:\s*"?(\d+)"?')::int, 0)
             )::int as virtual_sink
-            FROM view_game_stats_cleaned
-            {where_clause} AND event_type = 'SPEND' AND NOT (event_name = ANY(%s))
+            FROM event_logs
+            """ + where_clause + r"""
+            AND NOT (event_name = ANY(%s))
         """, tuple(params + [real_events]))
-        virtual_sink_data = cur.fetchone()
-        virtual_sink = virtual_sink_data['virtual_sink'] if virtual_sink_data and virtual_sink_data['virtual_sink'] else 0
+        virtual_sink = cur.fetchone()['virtual_sink'] or 0
 
-        # 5. METRICS PHỤ
-        cur.execute(f"SELECT COUNT(*)::int as total FROM view_game_stats_cleaned {where_clause}", tuple(params))
-        total_events = cur.fetchone()['total']
-        
-        # 6. FAIL RATE & TOTAL PLAYS (FIX V64: STRICT MODE - LỌC SẠCH RÁC)
-        # A. Tính Total Plays (Chỉ lấy missionStart của các level thực tế)
-        # Khớp với con số 94k
-        cur.execute(f"""
-            SELECT COUNT(*)::int as count
-            FROM view_game_stats_cleaned
-            {where_clause} 
-            AND level_id != '0' 
-            AND event_name = 'missionStart' 
-        """, tuple(params))
+        # 5. TOTAL PLAYS
+        cur.execute(f"SELECT COUNT(*)::int as count FROM event_logs {where_clause} AND event_name = ANY(%s)", tuple(params + [start_events]))
         total_plays = cur.fetchone()['count'] or 0
 
-        # B. Tính Real Fail (Chỉ lấy missionFail, LOẠI BỎ iapOfferClose)
-        # Trước đây ta dùng event_type='FAIL' nên bị dính rác
-        cur.execute(f"""
-            SELECT COUNT(*)::int as count
-            FROM view_game_stats_cleaned
-            {where_clause} 
-            AND level_id != '0' 
-            AND event_name = 'missionFail'
-        """, tuple(params))
+        # 6. FAIL RATE
+        cur.execute(f"SELECT COUNT(*)::int as count FROM event_logs {where_clause} AND event_name = ANY(%s)", tuple(params + [fail_events]))
         real_fail_count = cur.fetchone()['count'] or 0
-        
-        # C. Tính tỷ lệ chuẩn
-        # Fail Rate = Số lần chết / Số lần bắt đầu chơi
         fail_rate = round((real_fail_count / total_plays) * 100, 1) if total_plays > 0 else 0.0
 
         # 7. CHART MAIN
-        cur.execute(f"SELECT event_name as name, COUNT(*)::int as value FROM view_game_stats_cleaned {where_clause} GROUP BY event_name ORDER BY value DESC", tuple(params))
+        cur.execute(f"SELECT event_name as name, COUNT(*)::int as value FROM event_logs {where_clause} GROUP BY event_name ORDER BY value DESC", tuple(params))
         chart_data = cur.fetchall()
 
-        # 8. BOOSTER REVENUE - [ĐOẠN MỚI QUAN TRỌNG]
+        # 8. BOOSTER REVENUE (Manual Count bằng SQL)
+        # Vì Regex trong Group By phức tạp, ta lấy raw về xử lý một chút hoặc dùng count đơn giản
         booster_stats = []
         if booster_keys:
-            # Bảng giá Hardcode từ kết quả phân tích SQL
-            PRICE_MAP = {
-                "booster_Add": 60, "booster_Magnet": 80, "booster_Clear": 120,
-                "booster_Hammer": 120, "booster_Unlock": 190, "revive_boosterClear": 190
-            }
+            # Map giá
+            PRICE_MAP = {}
+            NAME_MAP = {}
+            for b in booster_config_list:
+                if isinstance(b, dict):
+                    k = b.get('key')
+                    PRICE_MAP[k] = b.get('price', 100)
+                    NAME_MAP[k] = b.get('name', k)
 
-            cur.execute(f"""
-                SELECT key as booster_key, SUM(value::numeric)::int as usage_count
-                FROM view_game_stats_cleaned
-                CROSS JOIN LATERAL jsonb_each_text(raw_json) as kv(key, value)
-                {where_clause} AND key = ANY(%s) AND value ~ '^[0-9]+$' 
-                GROUP BY key
-            """, tuple(params + [booster_keys]))
-            
-            raw_boosters = cur.fetchall()
-            name_map = {b['key']: b['name'] for b in booster_config_list}
-            
-            for b in raw_boosters:
-                key = b['booster_key']
-                count = b['usage_count']
-                price = PRICE_MAP.get(key, 0)
+            # Query đếm số lần xuất hiện của key trong chuỗi JSON
+            # Lưu ý: Cách này đếm số dòng có chứa key đó
+            for key in booster_keys:
+                # Regex tìm "key": so_luong (số lượng > 0)
+                # Ví dụ: "booster_Hammer": 1
+                cur.execute(r"""
+                    SELECT COUNT(*) as cnt 
+                    FROM event_logs 
+                    """ + where_clause + r""" 
+                    AND event_json ~ (%s || '\s*:\s*[1-9]')
+                """, tuple(params + [key]))
                 
-                booster_stats.append({
-                    "name": name_map.get(key, key),
-                    # Mẹo: Gán doanh thu vào biến value để biểu đồ vẽ theo doanh thu
-                    # Hoặc giữ nguyên count tùy bạn. Ở đây tôi để count để vẽ cột, và thêm revenue để hiển thị.
-                    "value": count, 
-                    "revenue": count * price,
-                    "price": price
-                })
+                count = cur.fetchone()['cnt']
+                if count > 0:
+                    price = PRICE_MAP.get(key, 100)
+                    name = NAME_MAP.get(key, key)
+                    booster_stats.append({
+                        "name": name,
+                        "value": count,
+                        "revenue": count * price,
+                        "price": price
+                    })
             
-            # Sắp xếp theo doanh thu
             booster_stats.sort(key=lambda x: x['revenue'], reverse=True)
 
         return jsonify({
             "success": True,
             "overview": {
                 "cards": {
-                    "revenue": real_revenue,     
+                    "revenue": real_revenue,      
                     "active_users": total_plays,
                     "avg_fail_rate": fail_rate,
                     "total_spent": virtual_sink  
@@ -1121,53 +1080,45 @@ def get_dashboard(app_id):
         })
 
     except Exception as e:
-        print(f"Error dashboard V61: {e}")
+        print(f"Error dashboard V93: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
     finally: conn.close()
 
-# --- [FIXED] API LẤY LEVEL (NỚI LIMIT LÊN 750) ---
 @app.route("/api/levels/<int:app_id>", methods=['GET'])
 def get_levels(app_id):
     conn = get_db()
     if not conn: return jsonify([])
     try:
         cur = conn.cursor()
-        
-        cur.execute("""
-            SELECT DISTINCT level_id 
-            FROM view_game_stats_cleaned 
-            WHERE app_id = %s
-              AND level_id ~ '^[0-9]+$'
-        """, (app_id,))
-        
+        # Lấy TOÀN BỘ dữ liệu để lọc chính xác (Không dùng LIMIT)
+        cur.execute("SELECT event_json FROM event_logs WHERE app_id = %s", (app_id,))
         rows = cur.fetchall()
         
-        levels = []
+        levels = set()
         for r in rows:
-            try:
-                lvl_str = r[0]
-                lvl_num = int(''.join(filter(str.isdigit, lvl_str)))
-                
-                # [SỬA LẠI]: Nới trần lên <= 750
-                if lvl_num <= 750:
-                    levels.append(lvl_num)
-            except:
-                pass
+            # Dùng mũi khoan vạn năng V95
+            data = universal_flatten(r[0])
+            
+            # Tìm Level ID ở mọi key có thể (Game 1 & 2)
+            lvl = data.get('levelID') or data.get('level_display') or data.get('missionID')
+            
+            if lvl is not None:
+                # Lọc lấy số
+                digits = ''.join(filter(str.isdigit, str(lvl)))
+                if digits:
+                    l = int(digits)
+                    if l <= 2000: levels.add(l)
         
-        # Sắp xếp tăng dần
-        levels.sort()
-        
-        return jsonify([str(l) for l in levels])
-
+        sorted_levels = sorted(list(levels))
+        return jsonify([str(l) for l in sorted_levels])
     except Exception as e:
-        print(f"❌ Error getting levels: {e}")
+        print(f"Error get_levels V95: {e}")
         return jsonify([])
-    finally:
-        conn.close()
+    finally: conn.close()
 
 @app.route("/dashboard/<int:app_id>/level-detail", methods=['GET'])
 def get_level_detail(app_id):
-    level_id = request.args.get('level_id')
+    level_id = request.args.get('level_id') # Level người dùng chọn từ menu
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
     
@@ -1181,300 +1132,195 @@ def get_level_detail(app_id):
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Base WHERE
-        where_view = "WHERE app_id = %s AND level_id = %s"
-        params_view = [app_id, str(level_id)]
-        where_analytics = "WHERE app_id = %s AND level_name = %s"
-        params_analytics = [app_id, f"Level {level_id}"] 
-
-        if start_date:
-            where_view += " AND event_time >= %s"
-            params_view.append(start_date + " 00:00:00")
-            where_analytics += " AND created_at >= %s"
-            params_analytics.append(start_date + " 00:00:00")
-        if end_date:
-            where_view += " AND event_time <= %s"
-            params_view.append(end_date + " 23:59:59")
-            where_analytics += " AND created_at <= %s"
-            params_analytics.append(end_date + " 23:59:59")
-
-        # --- METRICS (Giữ nguyên) ---
-        cur.execute(f"""
-            SELECT event_type, COUNT(*)::int as count, COALESCE(SUM(coin_spent), 0)::int as revenue
-            FROM view_game_stats_cleaned
-            {where_view} AND event_type IN ('START', 'FAIL', 'WIN', 'SPEND')
-            AND event_name != 'iapOfferClose'
-            GROUP BY event_type
-        """, tuple(params_view))
-        rows = cur.fetchall()
-        data_map = {r['event_type']: r for r in rows}
-        count_start = data_map.get('START', {}).get('count', 0)
-        count_win = data_map.get('WIN', {}).get('count', 0)
-        count_fail = data_map.get('FAIL', {}).get('count', 0)
-        count_spend = data_map.get('SPEND', {}).get('count', 0)
-        rev_spend = data_map.get('SPEND', {}).get('revenue', 0)
-        real_plays = count_win + count_fail
-        adjusted_start = max(count_start, real_plays)
-        win_rate = round((count_win / real_plays) * 100, 1) if real_plays > 0 else 0
-
-        # 1. Định nghĩa Bảng Giá & Bảng Tên (Hardcode chuẩn)
-        PRICE_MAP = {
-            "Hammer": 120, "Magnet": 80, "Add": 60, 
-            "Unlock": 190, "Clear": 120, "Revive Clear": 190
-        }
-
-        DISPLAY_MAP = { 
-            "Add": "Add Moves ➕", 
-            "Hammer": "Hammer 🔨", 
-            "Magnet": "Magnet 🧲", 
-            "Unlock": "Unlock 🔓", 
-            "Clear": "Clear 🧹", 
-            "Revive Clear": "Revive 💖" 
-        }
+        # Config Booster Map (Fallback)
+        PRICE_MAP = {"Hammer": 120, "Magnet": 80, "Add": 60, "Unlock": 190, "Clear": 120}
+        DISPLAY_MAP = {"Hammer": "Hammer 🔨", "Magnet": "Magnet 🧲", "Add": "Add Moves ➕"}
         
-        # 2. Query Database (Chỉ chạy 1 lần duy nhất)
-        cur.execute(f"""
-            SELECT TRIM(INITCAP(REPLACE(REPLACE(key, 'booster', ''), '_', ' '))) as item_name, SUM(value::numeric)::int as usage_count
-            FROM view_game_stats_cleaned
-            CROSS JOIN LATERAL jsonb_each_text(raw_json) as kv(key, value)
-            {where_view} AND event_type IN ('WIN', 'FAIL')
-            AND key ILIKE '%%booster%%' AND value ~ '^[0-9]+$' AND value::numeric > 0
-            GROUP BY key
-        """, tuple(params_view))
+        # Cố gắng load config xịn từ DB
+        try:
+            cfg = get_app_config(cur, app_id)
+            if cfg and 'boosters' in cfg:
+                for b in cfg['boosters']:
+                    if isinstance(b, dict):
+                        k = b.get('key',''); nm = b.get('name',''); pr = b.get('price', 100)
+                        cl = k.replace('booster_', '').replace('revive_', '')
+                        PRICE_MAP[cl] = pr; PRICE_MAP[k] = pr
+                        DISPLAY_MAP[cl] = nm; DISPLAY_MAP[k] = nm
+        except: pass
+
+        # LẤY TOÀN BỘ LOG TRONG KHOẢNG THỜI GIAN (Lọc Level bằng Python cho chắc)
+        where = "WHERE app_id = %s"; params = [app_id]
+        if start_date: where += " AND created_at >= %s"; params.append(start_date + " 00:00:00")
+        if end_date: where += " AND created_at <= %s"; params.append(end_date + " 23:59:59")
         
-        # 3. Xử lý dữ liệu
-        booster_usage_list = []
-        for row in cur.fetchall():
-            raw_name = row['item_name'] # Tên gốc (VD: Magnet)
-            count = row['usage_count']
-            
-            # A. Lấy tên đẹp có Icon (Nếu không có trong map thì dùng tên gốc)
-            display_name = DISPLAY_MAP.get(raw_name, raw_name)
-            
-            # B. Lấy giá tiền (Dùng tên gốc để so khớp)
-            unit_price = 0
-            if "Hammer" in raw_name: unit_price = PRICE_MAP["Hammer"]
-            elif "Magnet" in raw_name: unit_price = PRICE_MAP["Magnet"]
-            elif "Add" in raw_name: unit_price = PRICE_MAP["Add"]
-            elif "Unlock" in raw_name: unit_price = PRICE_MAP["Unlock"]
-            elif "Clear" in raw_name and "Revive" not in raw_name: unit_price = PRICE_MAP["Clear"]
-            elif "Revive" in raw_name: unit_price = PRICE_MAP["Revive Clear"]
-            
-            booster_usage_list.append({
-                "item_name": display_name, # <--- Đã có icon!
-                "usage_count": count,
-                "revenue": count * unit_price, 
-                "price": unit_price,
-                "type": "Used"
-            })
+        # Sắp xếp mới nhất trước
+        cur.execute(f"SELECT created_at, event_name, event_json FROM event_logs {where} ORDER BY created_at DESC", tuple(params))
+        all_rows = cur.fetchall()
 
-        # 4. Sắp xếp & Tính tổng (Cho KPI ARPU)
-        booster_usage_list.sort(key=lambda x: x['revenue'], reverse=True)
-        top_item_name = booster_usage_list[0]['item_name'] if booster_usage_list else "None"
-        total_level_revenue = sum(item['revenue'] for item in booster_usage_list)
-
-        cur.execute(f"""SELECT ROUND(AVG(coin_balance) FILTER (WHERE event_type='WIN'), 0)::int as avg_balance_win FROM view_game_stats_cleaned {where_view} AND event_type IN ('WIN', 'FAIL')""", tuple(params_view))
-        wallet_stats = cur.fetchone()
-        top_item_name = booster_usage_list[0]['item_name'] if booster_usage_list and booster_usage_list[0]['usage_count'] > 0 else "None"
-        metrics = { 
-            "total_plays": real_plays, 
-            "win_rate": win_rate, 
-            "arpu": total_level_revenue,  # <--- ĐIỂM SỬA QUAN TRỌNG
-            "avg_balance": wallet_stats.get('avg_balance_win', 0) if wallet_stats else 0, 
-            "top_item": top_item_name 
-        }
-        funnel_data = [ {"event_type": "START", "count": adjusted_start, "revenue": 0}, {"event_type": "WIN", "count": count_win, "revenue": 0}, {"event_type": "SPEND", "count": count_spend, "revenue": rev_spend}, {"event_type": "FAIL", "count": count_fail, "revenue": 0} ]
+        # --- XỬ LÝ PYTHON ---
+        target_lvl = str(level_id)
+        filtered_rows = []
         
-        cur.execute(f"""SELECT status, COALESCE(SUM(total_cost), 0)::int as total_cost FROM level_analytics {where_analytics} GROUP BY status""", tuple(params_analytics))
-        cost_rows = cur.fetchall()
-        cost_distribution = []
-        for r in cost_rows:
-            if r['total_cost'] > 0: cost_distribution.append({ "name": "Cost to Win" if r['status'] == 'WIN' else "Wasted on Fail", "value": r['total_cost'] })
+        metrics = {"start":0, "win":0, "fail":0, "spend":0, "rev":0}
+        b_counts = {}
         
-        # 1. Đếm tổng số dòng để phân trang
-        cur.execute(f"SELECT COUNT(*)::int as total FROM view_game_stats_cleaned {where_view}", tuple(params_view))
-        total_logs = cur.fetchone()['total']
-        total_pages = (total_logs + limit - 1) // limit
+        start_set = {"missionStart", "missionStart_Daily", "level_start", "level_loading_start"}
+        win_set = {"missionComplete", "missionComplete_Daily", "level_win"}
+        fail_set = {"missionFail", "missionFail_Daily", "level_fail", "level_lose"}
 
-        # 2. Lấy dữ liệu (Bắt buộc lấy raw_json)
-        cur.execute(f"""
-            SELECT 
-                to_char(event_time, 'HH24:MI:SS DD/MM') as time, 
-                user_id, event_name, coin_spent, 
-                raw_json 
-            FROM view_game_stats_cleaned {where_view}
-            ORDER BY event_time DESC LIMIT %s OFFSET %s
-        """, tuple(params_view + [limit, offset]))
-        
-        raw_logs = cur.fetchall()
-        processed_logs = []
-
-        for row in raw_logs:
-            # A. ÉP KIỂU JSON AN TOÀN (Handle String vs Dict)
-            raw_data = row['raw_json']
-            data = {}
+        for r in all_rows:
+            # MŨI KHOAN V95
+            data = universal_flatten(r['event_json'])
             
-            if isinstance(raw_data, str):
-                try: data = json.loads(raw_data)
-                except: data = {} 
-            elif isinstance(raw_data, dict):
-                data = raw_data
-            if isinstance(data, list) and len(data) > 0: data = data[0]
-            if not isinstance(data, dict): data = {}
-            data_lower = {k.lower(): v for k, v in data.items()}
-
-            # B. XỬ LÝ USER (CONTEXT)
-            user_display = "Guest"
-            if 'levelID' in data and str(data['levelID']).isdigit(): user_display = f"Guest (Lv.{data['levelID']})"
-            elif 'dayChallenge' in data: user_display = f"Guest (Daily #{data['dayChallenge']})"
-            elif 'packID' in data: user_display = f"Guest (Shop)"
+            # Kiểm tra Level (Chấp nhận cả số và chuỗi)
+            row_lvl = str(data.get('levelID') or data.get('level_display') or data.get('missionID') or "")
+            if row_lvl != target_lvl: continue
             
-            # C. XỬ LÝ DETAIL (XÂY DỰNG CHUỖI)
-            details = []
+            # Nếu khớp level -> Lưu lại để xử lý tiếp
+            r_dict = dict(r); r_dict['parsed'] = data
+            filtered_rows.append(r_dict)
             
-            # - Shop / Pack
-            if 'packid' in data_lower: 
-                curr = data_lower.get('currencycode', '')
-                amt = data_lower.get('amount', '')
-                details.append(f"📦 Pack: {data_lower['packid']} ({amt} {curr})")
+            evt = r['event_name']
+            if evt in start_set: metrics['start'] += 1
+            elif evt in win_set: metrics['win'] += 1
+            elif evt in fail_set: metrics['fail'] += 1
             
-            # - Progress (Thêm emoji cờ)
-            if 'level_progresspercent' in data_lower: 
-                details.append(f"🚩 Progress: {data_lower['level_progresspercent']}")
+            # Tiền
+            money = int(data.get('coin_spent') or data.get('coin_cost') or 0)
+            if money > 0:
+                metrics['spend'] += 1
+                metrics['rev'] += money
             
-            # - Win/Fail Logic (Thêm tổng số object và dấu X)
-            if 'objectunsolve' in data_lower: 
-                total = data_lower.get('objecttotal', '?')
-                details.append(f"❌ Unsolved: {data_lower['objectunsolve']}/{total}")
-            
-            # - Price (Thêm emoji tag giá)
-            price = data_lower.get('coin_price') or data_lower.get('coinprice') or data_lower.get('cost')
-            if price is not None:
-                try:
-                    p_val = int(price)
-                    if p_val > 0: details.append(f"🏷️ Price: {p_val}")
-                    else: details.append("🏷️ Free")
-                except: pass
-
-            # - Balance (Thêm emoji túi tiền)
-            bal = data_lower.get('coinbalance') or data_lower.get('coin_balance')
-            if bal: details.append(f"💰 Wallet: {bal}")
-            
-            # - Time Play (Mới thêm vào - Quan trọng để biết chơi lâu hay mau)
-            t_play = data_lower.get('timeplay') or data_lower.get('time_play')
-            if t_play: details.append(f"⏱️ Time: {t_play}s")
-
-            # - Boosters (Thêm emoji tia sét)
-            used_boosters = []
+            # Booster (Quét tất cả key)
             for k, v in data.items():
-                if 'booster' in k.lower() and str(v).isdigit() and int(v) > 0:
-                    clean_name = k.replace('booster_', '').replace('booster','').capitalize()
-                    used_boosters.append(f"{clean_name} x{v}")
-            if used_boosters: details.append(f"⚡ Used: {', '.join(used_boosters)}")
+                if ('booster' in k or 'revive' in k) and str(v).isdigit() and int(v) > 0:
+                    clean = k.replace('booster_', '').replace('revive_', '')
+                    b_counts[clean] = b_counts.get(clean, 0) + int(v)
 
-            # D. CHỐT CHUỖI DETAIL (FALLBACK MODE)
-            detail_str = " | ".join(details)
-            if not detail_str: detail_str = "-"
+        # TÍNH TOÁN METRICS CUỐI CÙNG
+        real_plays = metrics['win'] + metrics['fail']
+        if real_plays == 0: real_plays = metrics['start']
+        win_rate = round((metrics['win']/real_plays)*100, 1) if real_plays > 0 else 0
+        
+        # Danh sách Booster
+        b_list = []
+        for k, c in b_counts.items():
+            nm = DISPLAY_MAP.get(k, k.capitalize())
+            pr = PRICE_MAP.get(k, 100)
+            b_list.append({"item_name": nm, "usage_count": c, "revenue": c*pr, "price": pr, "type": "Used"})
+        b_list.sort(key=lambda x: x['revenue'], reverse=True)
+        
+        top_item = b_list[0]['item_name'] if b_list else "None"
+        arpu = sum(x['revenue'] for x in b_list)
+
+        final_metrics = { "total_plays": real_plays, "win_rate": win_rate, "arpu": arpu, "avg_balance": 0, "top_item": top_item }
+        funnel = [
+            {"event_type": "START", "count": real_plays, "revenue": 0},
+            {"event_type": "WIN", "count": metrics['win'], "revenue": 0},
+            {"event_type": "SPEND", "count": metrics['spend'], "revenue": metrics['rev']},
+            {"event_type": "FAIL", "count": metrics['fail'], "revenue": 0}
+        ]
+
+        # PHÂN TRANG (Pagination)
+        total_rec = len(filtered_rows)
+        paged_data = filtered_rows[offset : offset + limit]
+        
+        proc_logs = []
+        for r in paged_data:
+            d = r['parsed']
+            u = d.get('userID') or d.get('uuid') or "Guest"
+            dt = []
+            if d.get('coin_spent'): dt.append(f"💸 -{d['coin_spent']}")
+            for k,v in d.items():
+                if ('booster' in k or 'revive' in k) and int(v) > 0: 
+                    dt.append(f"⚡ {k.replace('booster_', '')} x{v}")
             
-            # E. TẠO OBJECT TRẢ VỀ (BẮN ĐA ĐIỂM VÀO MỌI BIẾN)
-            processed_logs.append({
-                "time": row['time'],
-                "user_id": user_display,
-                "event_name": row['event_name'],
-                "coin_spent": row['coin_spent'],
-                "item_name": detail_str 
+            proc_logs.append({
+                "time": r['created_at'].strftime('%H:%M:%S %d/%m'),
+                "user_id": str(u)[:15]+"..",
+                "event_name": r['event_name'],
+                "coin_spent": d.get('coin_spent', 0),
+                "item_name": " | ".join(dt) if dt else "-"
             })
 
         return jsonify({
             "success": True,
-            "metrics": metrics, "funnel": funnel_data, "booster_usage": booster_usage_list, "cost_distribution": cost_distribution,
-            "logs": { 
-                "data": processed_logs, 
-                "pagination": { "current": page, "total_pages": total_pages, "total_records": total_logs } 
-            }
+            "metrics": final_metrics, "funnel": funnel, "booster_usage": b_list, 
+            "logs": { "data": proc_logs, "pagination": { "current": page, "total_pages": (total_rec+limit-1)//limit, "total_records": total_rec } }
         })
 
     except Exception as e:
-        print(f"Level Detail Error: {e}")
+        print(f"Level Detail Error V95: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
     finally: conn.close()
 
 @app.route("/dashboard/<int:app_id>/strategic", methods=['GET'])
 def get_strategic_overview(app_id):
     conn = get_db()
-    if not conn: return jsonify({"success": False, "error": "DB Connection failed"}), 500
+    if not conn: return jsonify({"success": False, "error": "DB error"}), 500
 
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
 
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        config = get_app_config(cur, app_id)
-        real_events = config.get('events', {}).get('transaction', {}).get('real_currency', [])
         
-        where_clause = "WHERE app_id = %s AND level_id IS NOT NULL"
-        params = [app_id]
-        if start_date:
-            where_clause += " AND event_time >= %s"
-            params.append(start_date + " 00:00:00")
-        if end_date:
-            where_clause += " AND event_time <= %s"
-            params.append(end_date + " 23:59:59")
-
-        # QUERY V70: Đưa điều kiện lọc vào trong FILTER để an toàn hơn
-        cur.execute(f"""
-            SELECT 
-                level_id,
-                COUNT(*) FILTER (WHERE event_type = 'START')::int as total_plays,
-                -- Chỉ đếm Fail nếu KHÔNG PHẢI là iapOfferClose
-                COUNT(*) FILTER (WHERE event_type = 'FAIL' AND (event_name != 'iapOfferClose' OR event_name IS NULL))::int as fail_count,
-                COALESCE(SUM(coin_spent) FILTER (WHERE event_name = ANY(%s)), 0)::float as revenue
-            FROM view_game_stats_cleaned
-            {where_clause}
-            GROUP BY level_id
-        """, (real_events,) + tuple(params))
+        # 1. DANH SÁCH SỰ KIỆN TỔNG HỢP (Game 1 + Game 2)
+        start_set = {"missionStart", "missionStart_Daily", "level_start", "level_loading_start", "level_first_start"}
+        fail_set = {"missionFail", "missionFail_Daily", "level_fail", "level_lose"}
         
+        # 2. LẤY DỮ LIỆU THÔ (FULL SCAN)
+        where = "WHERE app_id = %s"; params = [app_id]
+        if start_date: where += " AND created_at >= %s"; params.append(start_date + " 00:00:00")
+        if end_date: where += " AND created_at <= %s"; params.append(end_date + " 23:59:59")
+        
+        # Chỉ lấy cột cần thiết để tối ưu tốc độ
+        cur.execute(f"SELECT event_name, event_json FROM event_logs {where}", tuple(params))
         rows = cur.fetchall()
         
-        balance_chart = []
+        # 3. TÍNH TOÁN (PYTHON AGGREGATION)
+        stats = {} # {lvl: {plays, fails, rev}}
+
         for r in rows:
-            lvl_str = str(r['level_id'])
-            digits = ''.join(filter(str.isdigit, lvl_str))
+            # BƯỚC QUAN TRỌNG: KHOAN SÂU DỮ LIỆU
+            data = universal_flatten(r['event_json'])
             
-            if digits:
-                lvl_num = int(digits)
-                if lvl_num <= 750: 
-                    plays = r['total_plays']
-                    fails = r['fail_count']
-                    rev = r['revenue']
-                    
-                    if plays > 0:
-                        fail_rate = round((fails / plays) * 100, 1)
-                        if fail_rate > 100: fail_rate = 100.0
-                    else:
-                        fail_rate = 0.0
-                    
-                    display_name = f"Lv.{lvl_num}"
-                    if lvl_num == 0: display_name = "Lobby/Tut"
+            # Tìm Level
+            lvl_raw = data.get('levelID') or data.get('level_display') or data.get('missionID')
+            if not lvl_raw: continue
+            
+            try:
+                lvl_num = int(''.join(filter(str.isdigit, str(lvl_raw))))
+                if lvl_num > 2000: continue
+            except: continue
+            
+            if lvl_num not in stats: stats[lvl_num] = {"plays": 0, "fails": 0, "rev": 0}
+            
+            evt = r['event_name']
+            if evt in start_set: stats[lvl_num]['plays'] += 1
+            elif evt in fail_set: stats[lvl_num]['fails'] += 1
+            
+            # Cộng tiền (Ưu tiên coin_spent, dự phòng coin_cost)
+            money = data.get('coin_spent') or data.get('coin_cost') or 0
+            try: stats[lvl_num]['rev'] += float(money)
+            except: pass
 
-                    if plays > 0 or rev > 0:
-                        balance_chart.append({
-                            "name": display_name,
-                            "level_index": lvl_num,
-                            "revenue": rev,
-                            "fail_rate": fail_rate,
-                            "plays": plays
-                        })
+        # 4. FORMAT CHART
+        chart = []
+        for lvl, val in stats.items():
+            if val['plays'] > 0 or val['rev'] > 0 or val['fails'] > 0:
+                fr = round((val['fails'] / val['plays']) * 100, 1) if val['plays'] > 0 else 0
+                if fr > 100: fr = 100.0
+                chart.append({
+                    "name": f"Lv.{lvl}", "level_index": lvl,
+                    "revenue": val['rev'], "fail_rate": fr, "plays": val['plays']
+                })
 
-        balance_chart.sort(key=lambda x: x['level_index'])
-
-        return jsonify({
-            "success": True,
-            "balance_chart": balance_chart
-        })
+        chart.sort(key=lambda x: x['level_index'])
+        return jsonify({"success": True, "balance_chart": chart})
 
     except Exception as e:
-        print(f"Strategic Error: {e}")
+        print(f"Strategic Error V95: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
     finally: conn.close()
 

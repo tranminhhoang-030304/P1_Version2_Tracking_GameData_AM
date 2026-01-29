@@ -13,3 +13,13 @@ raw_data/
 .DS_Store
 .env
 .next/
+
+# Bổ sung: Log file khi cài package lỗi
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Bổ sung: Các file cấu hình IDE cá nhân (không nên đẩy lên chung)
+.vscode/
+.idea/
+*.swp
