@@ -21,32 +21,48 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # --- 3. SỬA CẤU HÌNH DATABASE (Lấy từ .env) ---
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_NAME = os.getenv("DB_NAME", "p1_gamedata")
-DB_USER = os.getenv("DB_USER", "postgres")
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS") 
 
 # Kiểm tra an toàn: Nếu không đọc được pass thì báo lỗi
 if not DB_PASS:
-    print("⚠️  CẢNH BÁO: Chưa tìm thấy DB_PASS trong file .env")
+    print("⚠️ Chưa tìm thấy DB_PASS trong file .env")
 
-# --- CẤU HÌNH HỆ THỐNG ---
-MAX_RETRIES = 18       # Số lần thử lại tối đa cho Auto Worker
-
-# --- TRẠNG THÁI HỆ THỐNG TOÀN CỤC ---
-SYSTEM_STATE = {
-    "is_busy": False,          
-    "current_app_id": None,    
-    "current_run_type": None   
-}
-SYSTEM_LOCK = threading.Lock() 
+# --- QUẢN LÝ TRẠNG THÁI ĐA LUỒNG (PARALLEL MODE) ---
+# Thay vì khóa cả hệ thống, chỉ khóa từng App ID đang chạy
+RUNNING_APPS = set()
+APP_LOCK = threading.Lock()
 JOB_STOP_EVENTS = {}
 
+def is_app_busy(app_id):
+    with APP_LOCK:
+        return app_id in RUNNING_APPS
+
+def try_lock_app(app_id):
+    """
+    Cố gắng khóa App để chạy Job. 
+    Trả về True nếu khóa thành công (App đang rảnh).
+    Trả về False nếu App đang bận chạy job khác.
+    """
+    with APP_LOCK:
+        if app_id in RUNNING_APPS:
+            return False
+        RUNNING_APPS.add(app_id)
+        return True
+
+def unlock_app(app_id):
+    """Giải phóng App sau khi chạy xong"""
+    with APP_LOCK:
+        RUNNING_APPS.discard(app_id)
+
+# Giữ hàm này để tương thích code cũ, nhưng logic trả về False luôn để không chặn global
+def is_system_busy(): return False
+
+def set_system_busy(busy, app_id=None, run_type=None): pass
+
 def universal_flatten(raw_input):
-    """
-    Hàm V95: Khoan sâu vào mọi ngóc ngách của JSON (Hỗ trợ n lớp lồng nhau).
-    Trả về: Một dictionary phẳng chứa tất cả thông tin.
-    """
     if not raw_input: return {}
     
     data = {}
@@ -154,17 +170,6 @@ def get_db():
     except Exception as e:
         print("❌ LỖI KẾT NỐI DB:", e)
         return None
-
-# --- HÀM QUẢN LÝ TRẠNG THÁI BẬN/RẢNH ---
-def set_system_busy(busy, app_id=None, run_type=None):
-    with SYSTEM_LOCK:
-        SYSTEM_STATE["is_busy"] = busy
-        SYSTEM_STATE["current_app_id"] = app_id
-        SYSTEM_STATE["current_run_type"] = run_type
-
-def is_system_busy():
-    with SYSTEM_LOCK:
-        return SYSTEM_STATE["is_busy"]
 
 # ==========================================
 # PHẦN 1: CORE FUNCTIONS (TẠO JOB & CẬP NHẬT)
@@ -333,139 +338,51 @@ def transform_events_to_level_analytics(app_id, events):
     conn.commit()
     conn.close()
 
-def worker_process_jobs():
-    if is_system_busy(): return
-
-    conn = get_db()
-    if not conn: return
-    
-    # 1. Lấy Job đang chờ
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("""
-        SELECT * FROM etl_jobs 
-        WHERE status IN ('pending', 'processing') 
-        ORDER BY created_at ASC LIMIT 1
-    """)
-    job = cur.fetchone()
-    cur.close() 
-    conn.close()
-
-    if not job: return
-
-    job_id = job['id']
-    app_id = job['app_id']
-    retry_count = job['retry_count']
-
-    # ================= [BẮT ĐẦU ĐOẠN CẦN THÊM] =================
-    # LOGIC: Nếu thấy là Retry, tự động lội ngược dòng tìm ngày cũ
-    # (Ghi đè lại date_since/date_until mà API đã tính sai)
-    if job.get('run_type') == 'retry' and job.get('retry_job_id'):
-        try:
-            print(f"🕵️‍♂️ Worker phát hiện Retry cho Job #{job['retry_job_id']}. Đang tính lại ngày...")
-            conn_fix = get_db()
-            cur_fix = conn_fix.cursor(cursor_factory=RealDictCursor)
-            
-            # Lấy giờ chạy của Job quá khứ
-            cur_fix.execute("SELECT start_time FROM job_history WHERE id = %s", (job['retry_job_id'],))
-            old_job = cur_fix.fetchone()
-            cur_fix.close()
-            conn_fix.close()
-
-            if old_job and old_job['start_time']:
-                # Tính lại cửa sổ thời gian (giống logic chu kỳ 1 tiếng)
-                fix_target = old_job['start_time']
-                fix_from = fix_target - timedelta(minutes=65)
-                
-                # CẬP NHẬT LẠI DỮ LIỆU TRONG BỘ NHỚ
-                job['date_until'] = fix_target.strftime('%Y-%m-%d %H:%M:%S')
-                job['date_since'] = fix_from.strftime('%Y-%m-%d %H:%M:%S')
-                print(f"✅ Đã điều chỉnh thời gian về quá khứ: {job['date_since']} -> {job['date_until']}")
-        except Exception as e_fix:
-            print(f"⚠️ Lỗi khi tính lại ngày Retry: {e_fix}")
-    # ================= [KẾT THÚC ĐOẠN CẦN THÊM] =================
-
-    # 2. Xử lý quá hạn Retry
-    if retry_count >= MAX_RETRIES:
-        print(f"💀 Job #{job_id} MAX RETRIES. Failed.")
-        update_job_status(job_id, 'failed', f"Timeout: {retry_count} retries.")
-        # Cập nhật history lần cuối nếu có
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("UPDATE job_history SET status='Failed', end_time=NOW() WHERE app_id=%s AND status IN ('Running','Processing')", (app_id,))
-        conn.commit()
-        conn.close()
-        return 
-
-    set_system_busy(True, app_id, 'auto')
-
-    # 3. --- [QUAN TRỌNG] TÌM HOẶC TẠO HISTORY ---
-    # Mục đích: Để các lần Retry sau vẫn nối vào log của lần đầu tiên
+def execute_job_logic(job_id, app_id, retry_count, run_type, retry_job_id):
+    """
+    Worker V107: Smart Retry (Chỉ Retry 202, Lỗi 4xx dừng ngay)
+    """
     hist_id = None
     try:
         conn = get_db()
+        if not conn: return
         cur = conn.cursor()
-        # Tìm history đang chạy dở (Processing) của App này
-        cur.execute("""
-            SELECT id FROM job_history 
-            WHERE app_id = %s AND status IN ('Running', 'Processing') 
-            ORDER BY start_time DESC LIMIT 1
-        """, (app_id,))
-        row = cur.fetchone()
         
-        if row:
-            hist_id = row[0] # Dùng lại ID cũ để nối log
-        else:
-            # Tạo mới nếu chưa có (Lần chạy đầu tiên)
-            cur.execute("""
-                INSERT INTO job_history (app_id, start_time, status, run_type, logs, total_events)
-                VALUES (%s, NOW(), 'Processing', 'schedule', '', 0)
-                RETURNING id
-            """, (app_id,))
-            hist_id = cur.fetchone()[0]
+        cur.execute("INSERT INTO job_history (app_id, start_time, status, run_type, logs, total_events) VALUES (%s, NOW(), 'Running', 'schedule', '', 0) RETURNING id", (app_id,))
+        hist_id = cur.fetchone()[0]
         conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"❌ History Init Error: {e}")
-
-    try:
-        # Hàm log cục bộ: vừa in ra màn hình, vừa đẩy vào DB ngay lập tức
+        
         def log(msg):
-            print(msg)
+            ts = datetime.now().strftime("[%H:%M:%S]")
+            print(f"{ts} [App {app_id}] {msg}")
             append_log_to_db(hist_id, msg)
 
-        log(f"▶️ Worker picking up Job #{job_id} (Retry: {retry_count}/{MAX_RETRIES})")
+        log(f"▶️ Start Job #{job_id} (Attempt {retry_count})...")
 
-        try:
-            # 1. Parse chuỗi giờ UTC từ Database ra
-            utc_start = datetime.strptime(str(job['date_since']), '%Y-%m-%d %H:%M:%S')
-            utc_end = datetime.strptime(str(job['date_until']), '%Y-%m-%d %H:%M:%S')
-            
-            # 2. Cộng thêm 7 tiếng để ra giờ Việt Nam
-            vn_start = utc_start + timedelta(hours=7)
-            vn_end = utc_end + timedelta(hours=7)
-            
-            # 3. Format lại cho đẹp (Giống Terminal)
-            log(f" 🕒 Scanning Window: VN[{vn_start.strftime('%H:%M')} - {vn_end.strftime('%H:%M')}] (UTC: {utc_start.strftime('%H:%M')} - {utc_end.strftime('%H:%M')})")
-        except:
-            # Fallback: Nếu lỗi format thì in nguyên gốc
-            log(f" 🕒 Scanning Window: {job['date_since']} -> {job['date_until']}")
-
-        # Lấy thông tin App
-        conn = get_db()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT * FROM apps WHERE id = %s", (app_id,))
-        app_info = cur.fetchone()
-        cur.close()
-        conn.close()
+        cur.execute("SELECT * FROM etl_jobs WHERE id = %s", (job_id,))
+        job = cur.fetchone()
+        conn.close() 
 
-        if not app_info:
-            log("❌ Error: App not found or deleted.")
-            update_job_status(job_id, 'failed', 'App deleted')
-            return
+        conn_thread = get_db()
+        cur_thread = conn_thread.cursor(cursor_factory=RealDictCursor)
+        cur_thread.execute("SELECT * FROM apps WHERE id = %s", (app_id,))
+        app_info = cur_thread.fetchone()
         
+        if not app_info:
+            log("❌ App missing."); update_job_status(job_id, 'failed'); return
+
         clean_app_id = str(app_info['app_id']).strip()
         clean_token = str(app_info['api_token']).strip()
-        # Gọi API AppMetrica
+        
+        try:
+            u_start = datetime.strptime(str(job['date_since']), '%Y-%m-%d %H:%M:%S')
+            u_end = datetime.strptime(str(job['date_until']), '%Y-%m-%d %H:%M:%S')
+            vn_start = u_start + timedelta(hours=7)
+            vn_end = u_end + timedelta(hours=7)
+            log(f"🕒 Scanning Window: VN[{vn_start.strftime('%H:%M')} - {vn_end.strftime('%H:%M')}]")
+        except: pass
+
         url = "https://api.appmetrica.yandex.com/logs/v1/export/events.json"
         params = {
             "application_id": clean_app_id,
@@ -475,100 +392,139 @@ def worker_process_jobs():
             "limit": 1000000 
         }
         headers = {"Authorization": f"OAuth {clean_token}"}
-
-        log(f"  📡 Connecting to AppMetrica...")
-        response = requests.get(url, params=params, headers=headers, stream=True, timeout=600)
         
-        if response.status_code == 200:
-            log("  ✅ Connection Established (200 OK). Downloading...")
+        # --- LOGIC RETRY THÔNG MINH ---
+        max_attempts = 18 
+        poll_interval = 180 # 180 giây cho 202
+        
+        for attempt in range(1, max_attempts + 1):
+            if JOB_STOP_EVENTS.get(hist_id) and JOB_STOP_EVENTS[hist_id].is_set():
+                log("🛑 Stopped."); update_job_status(job_id, 'cancelled'); break
             
-            conn = get_db()
-            cur = conn.cursor()
+            log(f"📡 Requesting AppMetrica ({attempt}/{max_attempts})...")
             
-            data = response.json()
-            events = data.get('data', [])
-            event_count = len(events)
-            
-            # Insert dữ liệu
-            for event in events:
-                evt_name = event.get('event_name', 'unknown')
-                evt_json = json.dumps(event)
-                try: ts = datetime.fromtimestamp(int(event.get('event_timestamp')))
-                except: ts = datetime.now()
-                
-                cur.execute("""
-                    INSERT INTO event_logs (app_id, event_name, event_json, count, created_at) 
-                    VALUES (%s, %s, %s, 1, %s)
-                """, (app_id, evt_name, evt_json, ts))
             try:
-                transform_events_to_level_analytics(app_id, events)
-                # LỖI CŨ: logs(...) -> ĐỔI THÀNH log(...)
-                log(f"ETL transform completed for {len(events)} events") 
-            except Exception as e:
-                # LỖI CŨ: logs(...) -> ĐỔI THÀNH log(...)
-                log(f"ETL transform error: {str(e)}")       
-            # --- CẬP NHẬT TRẠNG THÁI CUỐI CÙNG ---
-            # Status: Success, cập nhật End Time -> Duration sẽ tính đúng
-            if hist_id:
-                cur.execute("""
-                    UPDATE job_history 
-                    SET end_time = NOW(), status = 'Success', total_events = %s, success_count = %s
-                    WHERE id = %s
-                """, (event_count, event_count, hist_id))
-            
-            conn.commit()
-            conn.close()
-            
-            update_job_status(job_id, 'completed', f"Done. {event_count} events.")
-            log(f"  🎉 Job Completed. Imported: {event_count} events.")
+                response = requests.get(url, params=params, headers=headers, stream=True, timeout=600)
+                
+                if response.status_code == 200:
+                    # SUCCESS
+                    data = response.json()
+                    events = data.get('data', [])
+                    count = len(events)
+                    log(f"✅ Downloaded {count} events. Saving...")
+                    
+                    conn_ins = get_db(); cur_ins = conn_ins.cursor()
+                    vals = []
+                    for e in events:
+                        evt_json = json.dumps(e)
+                        try: ts = datetime.fromtimestamp(int(e.get('event_timestamp')))
+                        except: ts = datetime.now()
+                        vals.append((app_id, e.get('event_name'), evt_json, 1, ts))
+                    
+                    if vals:
+                        cur_ins.executemany("INSERT INTO event_logs (app_id, event_name, event_json, count, created_at) VALUES (%s, %s, %s, %s, %s)", vals)
+                    conn_ins.commit(); conn_ins.close()
+                    
+                    try:
+                        transform_events_to_level_analytics(app_id, events)
+                    except Exception as te: log(f"⚠️ Transform: {te}")
 
-        elif response.status_code == 202:
-            wait_time=180
-            log(f"  ⏳ HTTP 202: Data not ready. Waiting...")
-            # Không đóng History, để trạng thái Processing để lần sau nối log tiếp
-            update_job_status(job_id, 'processing', 'Waiting for AppMetrica (202)...', inc_retry=True)
-            time.sleep(wait_time) 
+                    log(f"🎉 Success. Imported {count}.")
+                    update_job_status(job_id, 'completed', f"OK. {count} events.")
+                    
+                    conn_fin = get_db(); cur_fin = conn_fin.cursor()
+                    cur_fin.execute("UPDATE job_history SET end_time=NOW(), status='Success', total_events=%s WHERE id=%s", (count, hist_id))
+                    conn_fin.commit(); conn_fin.close()
+                    break 
+                
+                elif response.status_code == 202:
+                    # HTTP 202: Đợi 180s rồi thử lại (ĐÂY LÀ TRƯỜNG HỢP DUY NHẤT ĐƯỢC RETRY)
+                    if attempt < max_attempts:
+                        log(f"⏳ Server 202 (Preparing). Waiting {poll_interval}s...")
+                        time.sleep(poll_interval)
+                        continue 
+                    else:
+                        log("❌ Timeout 202.")
+                        update_job_status(job_id, 'failed', "Timeout 202")
+                        conn_fin = get_db(); cur_fin = conn_fin.cursor()
+                        cur_fin.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
+                        conn_fin.commit(); conn_fin.close()
+                
+                elif response.status_code in [400, 401, 403]:
+                    # LỖI CLIENT (Sai Token, Sai ID...) -> DỪNG NGAY
+                    log(f"❌ FATAL ERROR {response.status_code}: {response.text[:100]}")
+                    update_job_status(job_id, 'failed', f"Fatal {response.status_code}")
+                    conn_fin = get_db(); cur_fin = conn_fin.cursor()
+                    cur_fin.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
+                    conn_fin.commit(); conn_fin.close()
+                    break # Break ngay lập tức, không Retry
+                
+                else:
+                    # Lỗi khác (500, 502...) -> Thử lại nhẹ nhàng
+                    log(f"❌ Server Error {response.status_code}. Retry in 10s...")
+                    time.sleep(10)
+
+            except Exception as req_err:
+                log(f"❌ Network Error: {req_err}")
+                time.sleep(10)
         
-        elif response.status_code == 429:
-            # 1. In toàn bộ nội dung lỗi ra để xem nó bắt chờ bao lâu (thường nó viết trong này)
-            error_body = response.text
-            log(f" ⛔ BỊ CHẶN (429)! Nội dung từ Server: {error_body}")
-            
-            # 2. Đánh dấu Job là FAILED ngay lập tức (Để Worker không bị kẹt)
-            update_job_status(job_id, 'failed', f"Rate Limit 429. Server said: {error_body[:100]}...")
-            
-            # 3. Đóng dòng lịch sử chạy
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
-            conn.commit()
-            conn.close()
-            
-            # 4. QUAN TRỌNG: Return luôn để thoát khỏi hàm, giải phóng Worker
-            log(" 🛑 Dừng Job hiện tại để bảo toàn lực lượng. Vui lòng kiểm tra log và thử lại sau.")
-            return
-
         else:
-            log(f"  ❌ HTTP Error {response.status_code}")
-            update_job_status(job_id, 'failed', f"HTTP {response.status_code}")
-            # Đóng History vì lỗi
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
-            conn.commit()
-            conn.close()
+            # Hết vòng lặp
+            if JOB_STOP_EVENTS.get(hist_id) and not JOB_STOP_EVENTS[hist_id].is_set():
+                log("❌ Job Failed (Max Retries).")
+                update_job_status(job_id, 'failed', "Max Retries")
+                conn_fin = get_db(); cur_fin = conn_fin.cursor()
+                cur_fin.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
+                conn_fin.commit(); conn_fin.close()
 
     except Exception as e:
-        log(f"  ❌ Exception: {str(e)}")
-        update_job_status(job_id, 'failed', str(e))
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
-        conn.commit()
-        conn.close()
-    
+        print(f"Critical: {e}")
+        if hist_id: append_log_to_db(hist_id, f"❌ Crash: {e}")
     finally:
-        set_system_busy(False)
+        print(f"🔓 App {app_id} Free.")
+        unlock_app(app_id)
+
+def worker_process_jobs():
+    """
+    DISPATCHER V104: Log picking up job
+    """
+    try:
+        conn = get_db()
+        if not conn: return
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cur.execute("""
+            SELECT * FROM etl_jobs 
+            WHERE status = 'pending' 
+            ORDER BY created_at ASC
+        """)
+        jobs = cur.fetchall()
+        cur.close(); conn.close()
+
+        for job in jobs:
+            app_id = job['app_id']
+            job_id = job['id']
+            
+            if try_lock_app(app_id):
+                # In log Dispatcher
+                ts = datetime.now().strftime("[%H:%M:%S]")
+                print(f"{ts} ▶️ Worker picking up Job #{job_id} (Parallel Start)")
+                
+                update_job_status(job_id, 'processing', 'Worker starting...')
+
+                t = threading.Thread(target=execute_job_logic, args=(
+                    job_id, 
+                    app_id, 
+                    job['retry_count'], 
+                    job.get('run_type'), 
+                    job.get('retry_job_id')
+                ))
+                t.start()
+            else:
+                pass
+
+    except Exception as e:
+        print(f"❌ Dispatcher Error: {e}")
 
 def run_worker_loop():
     print("🚀 Worker Loop Started...")
@@ -577,93 +533,109 @@ def run_worker_loop():
             worker_process_jobs()
         except Exception as e:
             print(f"❌ Worker Loop Error: {e}")
-        time.sleep(20)
+        time.sleep(60)
 
-# ==========================================
-# PHẦN 3: SCHEDULER THÔNG MINH 
-# ==========================================
 def run_scheduler_loop():
-    print("🚀 Smart Scheduler Started (Anchor Time & Skip Logic)...")
+    print("🚀 Auto Scheduler V103.5 (Strict Config Mode) Started...")
     while True:
         try:
             now = datetime.now()
             conn = get_db()
+            if not conn:
+                time.sleep(60); continue
+                
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute("SELECT * FROM apps WHERE is_active = true") 
             apps = cur.fetchall()
 
             for app in apps:
                 app_id = app['id']
-                interval_minutes = app.get('interval_minutes', 60) 
-                if not interval_minutes: interval_minutes = 60
-
-                sch_time_str = app.get('schedule_time', '00:00')
-                try:
-                    h, m = map(int, sch_time_str.split(':'))
-                    anchor_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
-                except:
-                    anchor_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 
-                if anchor_time > now:
-                    anchor_time = anchor_time - timedelta(days=1)
+                # --- [ĐỌC CẤU HÌNH TỪ TAB SETTINGS] ---
+                # 1. Lấy chu kỳ (Ví dụ: 60 phút)
+                interval = app.get('interval_minutes', 60) or 60
                 
-                diff = now - anchor_time
-                cycles_passed = int(diff.total_seconds() // (interval_minutes * 60))
+                # 2. Lấy Mốc Thời Gian Bắt Đầu (Ví dụ: "14:15")
+                sch_str = app.get('schedule_time', '00:00')
                 
-                expected_run_time = anchor_time + timedelta(minutes=cycles_passed * interval_minutes)
+                # --- THUẬT TOÁN TÍNH GIỜ CHẠY ---
+                # Parse giờ và phút từ cấu hình (h=14, m=15)
+                try: h, m = map(int, sch_str.split(':'))
+                except: h=0; m=0
                 
-                time_since_expected = (now - expected_run_time).total_seconds()
-                is_time_to_run = 0 <= time_since_expected < 65
-
-                if is_time_to_run:
-                    cur.execute("SELECT count(*) as count FROM etl_jobs WHERE app_id = %s AND created_at > %s", 
-                                (app_id, now - timedelta(minutes=2)))
+                # Tạo mốc Anchor hôm nay dựa trên giờ cài đặt (Hôm nay lúc 14:15)
+                anchor = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                
+                # Nếu mốc này nằm trong tương lai -> Lùi về hôm qua để làm gốc tính toán
+                if anchor > now: 
+                    anchor -= timedelta(days=1)
+                
+                # Tính số chu kỳ đã trôi qua kể từ mốc gốc
+                delta_seconds = (now - anchor).total_seconds()
+                cycles_passed = int(delta_seconds // (interval * 60))
+                
+                # TÍNH GIỜ CHẠY CHÍNH XÁC CỦA CHU KỲ HIỆN TẠI
+                # Công thức: Mốc Cài Đặt + (Số chu kỳ * Số phút mỗi chu kỳ)
+                expected_run_time = anchor + timedelta(minutes=cycles_passed * interval)
+                
+                # --- KIỂM TRA & TẠO JOB ---
+                # Logic: Nếu bây giờ (now) vừa cán qua mốc expected_run_time (trong vòng 5 phút đổ lại)
+                # Ví dụ: Giờ chạy là 16:15. Bây giờ là 16:16 -> OK, Tạo job!
+                
+                if expected_run_time <= now <= (expected_run_time + timedelta(minutes=5)):
+                    
+                    # Kiểm tra xem đã tạo job cho lần chạy này chưa (tránh tạo trùng)
+                    # Quét tìm job được tạo trong 10 phút gần đây
+                    check_start = now - timedelta(minutes=10)
+                    cur.execute("""
+                        SELECT count(*) as count FROM etl_jobs 
+                        WHERE app_id = %s AND created_at >= %s
+                    """, (app_id, check_start))
                     
                     if cur.fetchone()['count'] == 0:
-                        print(f"⏰ Triggering Schedule for App #{app_id} at {now.strftime('%H:%M:%S')}")
+                        print(f"⏰ [App {app_id}] Đúng giờ {expected_run_time.strftime('%H:%M')} (Theo cấu hình {sch_str}). Tạo Job!")
                         
-                        if is_system_busy():
-                            print(f"⚠️ SKIPPING Auto Schedule for App #{app_id} - System is BUSY")
-                            cur.execute("""
-                                INSERT INTO job_history (app_id, start_time, status, run_type, logs) 
-                                VALUES (%s, NOW(), 'Skipped', 'schedule', 'Skipped due to System Busy (Conflict)')
-                            """, (app_id,))
-                            conn.commit()
-                        else:
-                            delay_minutes = 90
-                            end_time_vn = now - timedelta(minutes=delay_minutes)
-                            start_time_vn = end_time_vn - timedelta(minutes=interval_minutes)
-                            
-                            end_time_utc = end_time_vn - timedelta(hours=7)
-                            start_time_utc = start_time_vn - timedelta(hours=7)
-                            
-                            date_until = end_time_utc.strftime('%Y-%m-%d %H:%M:%S')
-                            date_since = start_time_utc.strftime('%Y-%m-%d %H:%M:%S')
-
-                            print(f"  🎫 Creating Job: VN[{start_time_vn.strftime('%H:%M')} - {end_time_vn.strftime('%H:%M')}] -> UTC[{date_since} - {date_until}]")
-                            create_etl_job(app_id, date_since, date_until)
-
-            cur.close()
-            conn.close()
+                        # Cấu hình thời gian lấy dữ liệu (Lùi 90p, lấy 60p)
+                        delay_minutes = 90
+                        duration_minutes = 60
+                        
+                        end_dt_vn = now - timedelta(minutes=delay_minutes)
+                        start_dt_vn = end_dt_vn - timedelta(minutes=duration_minutes)
+                        
+                        # Đổi sang UTC cho server AppMetrica
+                        end_dt_utc = end_dt_vn - timedelta(hours=7)
+                        start_dt_utc = start_dt_vn - timedelta(hours=7)
+                        
+                        # Tạo Job
+                        create_etl_job(
+                            app_id, 
+                            start_dt_utc.strftime('%Y-%m-%d %H:%M:%S'), 
+                            end_dt_utc.strftime('%Y-%m-%d %H:%M:%S')
+                        )
+            
+            cur.close(); conn.close()
         except Exception as e:
             print(f"❌ Scheduler Error: {e}")
         
+        # Ngủ 60s
         time.sleep(60)
 
-# PHẦN 4: LOGIC CHẠY TAY (MANUAL) - [FIXED RETRY LOGIC]
+# ==========================================
+# PHẦN 4: LOGIC CHẠY TAY (MANUAL) - [UPDATED V98 PARALLEL]
+# ==========================================
 def perform_manual_etl(app_id, run_type='manual', is_demo=False, retry_job_id=None):
-    if is_system_busy():
-        print(f"❌ System BUSY. Skip run for App {app_id}.")
+    # [THAY ĐỔI QUAN TRỌNG] Kiểm tra khóa riêng của App thay vì khóa hệ thống
+    if not try_lock_app(app_id):
+        print(f"❌ App {app_id} is BUSY (Parallel Check). Skip manual run.")
         return
 
-    set_system_busy(True, app_id, run_type)
     hist_id = None
 
     try:
         conn = get_db()
         if not conn: return
         
-        # 1. TẠO RECORD HISTORY
+        # 1. TẠO HISTORY
         msg_start = f"🚀 Starting {run_type.upper()} run..."
         if retry_job_id: msg_start += f" (Retry of Job #{retry_job_id})"
         
@@ -680,132 +652,111 @@ def perform_manual_etl(app_id, run_type='manual', is_demo=False, retry_job_id=No
         JOB_STOP_EVENTS[hist_id] = stop_event
 
         def log(msg):
-            print(msg)
+            print(f"[App {app_id}] {msg}")
             append_log_to_db(hist_id, msg)
 
-        # 2. LẤY CẤU HÌNH APP
+        # 2. LẤY CONFIG
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT * FROM apps WHERE id=%s", (app_id,))
         app = cur.fetchone()
         
         if not app:
-            log("❌ Error: App ID not found.")
-            cur.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
-            conn.commit()
-            return 
+            log("❌ Error: App ID not found."); return
 
-        # 3. CẤU HÌNH THỜI GIAN
-        date_since = None
-        date_until = None
+        # 3. XỬ LÝ NGÀY GIỜ (Strict Retry V83 logic)
+        date_since = None; date_until = None
         
-        # --- CASE 1: STRICT RETRY (Logic V85 - Vét cạn Regex) ---
         if run_type == 'retry' and retry_job_id:
             cur.execute("SELECT logs, start_time FROM job_history WHERE id = %s", (retry_job_id,))
             old_row = cur.fetchone()
             
             if old_row and old_row['logs']:
                 logs = old_row['logs']
-                
-                # A. Tìm 2 chuỗi ngày giờ đầy đủ (YYYY-MM-DD HH:MM:SS)
-                # Bất kể nó nằm trong dấu [], (), hay sau dấu :
-                full_timestamps = re.findall(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", logs)
-                
-                if len(full_timestamps) >= 2:
-                    # Lấy 2 mốc cuối cùng tìm được (Thường là Scanning Window)
-                    date_since = full_timestamps[-2]
-                    date_until = full_timestamps[-1]
-                    log(f"🔙 RETRY V85: Found exact window: {date_since} -> {date_until}")
-                
-                # B. Nếu không có ngày, tìm 2 chuỗi giờ (HH:MM)
+                # Regex V83: Tìm bất kỳ 2 chuỗi ngày giờ nào nằm trên cùng 1 dòng
+                timestamps = re.findall(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", logs)
+                if len(timestamps) >= 2:
+                    date_since = timestamps[-2]
+                    date_until = timestamps[-1]
+                    log(f"🔙 RETRY V83: Found timestamps: {date_since} -> {date_until}")
                 elif old_row['start_time']:
-                    short_times = re.findall(r"(\d{2}:\d{2})", logs)
-                    if len(short_times) >= 2:
-                        # Lấy ngày gốc của Job cũ
-                        base_date = old_row['start_time'].strftime('%Y-%m-%d')
-                        # Ghép ngày + giờ tìm được
-                        # Lưu ý: short_times có thể bắt nhầm giờ trong log message, nên lấy 2 cái cuối
-                        date_since = f"{base_date} {short_times[-2]}:00"
-                        date_until = f"{base_date} {short_times[-1]}:00"
-                        log(f"🔙 RETRY V85 (Short): Reconstructed: {date_since} -> {date_until}")
+                     short_times = re.findall(r"(\d{2}:\d{2})", logs)
+                     if len(short_times) >= 2:
+                         base_date = old_row['start_time'].strftime('%Y-%m-%d')
+                         date_since = f"{base_date} {short_times[-2]}:00"
+                         date_until = f"{base_date} {short_times[-1]}:00"
+                         log(f"🔙 RETRY V83 (Short): Reconstructed: {date_since} -> {date_until}")
 
-            # [STRICT MODE] Nếu vẫn không tìm thấy -> BÁO LỖI
             if not date_since:
-                log(f"❌ RETRY FAILED: Cannot find time patterns in logs of Job #{retry_job_id}.")
-                cur.execute("UPDATE job_history SET end_time=NOW(), status='Failed' WHERE id=%s", (hist_id,))
-                conn.commit()
-                return
+                log(f"❌ RETRY FAILED: Cannot find timestamps in Job #{retry_job_id} logs."); return
 
-        # --- CASE 2: DEMO / MANUAL ---
-        if not date_since:
+        # 4. CHẠY MANUAL (Tính giờ nếu không phải Retry)
+        elif not date_since:
             now = datetime.now()
-            delay_minutes = 45 if run_type == 'demo' else 90
-            duration_minutes = 15 if run_type == 'demo' else 60
+            delay = 45 if run_type == 'demo' else 90
+            duration = 15 if run_type == 'demo' else 60
             
-            end_dt = now - timedelta(minutes=delay_minutes)
-            start_dt = end_dt - timedelta(minutes=duration_minutes)
-            
+            end_dt = now - timedelta(minutes=delay)
+            start_dt = end_dt - timedelta(minutes=duration)
             date_since = start_dt.strftime('%Y-%m-%d %H:%M:%S')
             date_until = end_dt.strftime('%Y-%m-%d %H:%M:%S')
             log(f"⚙️ MANUAL MODE: {date_since} -> {date_until}")
 
         log(f" 🕒 Scanning Window: {date_since} -> {date_until}")
         
-        # 4. GỌI API APPMETRICA (Dùng .strip() an toàn)
+        # 5. GỌI API APPMETRICA
         clean_app_id = str(app['app_id']).strip()
         clean_token = str(app['api_token']).strip()
-
         url = "https://api.appmetrica.yandex.com/logs/v1/export/events.json"
-        params = {
-            "application_id": clean_app_id,
-            "date_since": date_since,
-            "date_until": date_until,
-            "fields": "event_name,event_timestamp,event_json",
-            "limit": 1000000
-        }
+        params = { "application_id": clean_app_id, "date_since": date_since, "date_until": date_until, "fields": "event_name,event_timestamp,event_json", "limit": 1000000 }
         headers = {"Authorization": f"OAuth {clean_token}"}
         
-        status = "Failed"; total_events = 0
-        
+        status = "Failed"; total = 0
         for i in range(18): # 18 retries
-            if stop_event.is_set():
-                log("🛑 USER STOPPED PROCESS.")
-                status = "Cancelled"; break
-
-            log(f"📡 Requesting AppMetrica (Attempt {i+1}/18)...")
-            resp = requests.get(url, params=params, headers=headers)
+            if stop_event.is_set(): status="Cancelled"; break
+            log(f"📡 Requesting AppMetrica ({i+1}/18)...")
+            r = requests.get(url, params=params, headers=headers)
             
-            if resp.status_code == 200:
-                data = resp.json().get('data', [])
-                total_events = len(data)
-                log(f"✅ Success! Received {total_events} events. Importing...")
+            if r.status_code == 200:
+                data = r.json().get('data', [])
+                total = len(data)
+                log(f"✅ Importing {total} events...")
                 
-                conn_insert = get_db(); cur_insert = conn_insert.cursor()
-                values = []
+                # Insert DB
+                conn2 = get_db(); cur2 = conn2.cursor()
+                vals = []
                 for d in data:
                     try: ts = datetime.fromtimestamp(int(d.get('event_timestamp')))
                     except: ts = datetime.now()
-                    values.append((app_id, d.get('event_name', 'unknown'), json.dumps(d), 1, ts))
+                    vals.append((app_id, d.get('event_name'), json.dumps(d), 1, ts))
                 
-                cur_insert.executemany("INSERT INTO event_logs (app_id, event_name, event_json, count, created_at) VALUES (%s,%s,%s,%s,%s)", values)
-                conn_insert.commit(); conn_insert.close()
+                cur2.executemany("INSERT INTO event_logs (app_id, event_name, event_json, count, created_at) VALUES (%s,%s,%s,%s,%s)", vals)
+                conn2.commit(); conn2.close()
                 
-                status = "Success"; log(f"🎉 Done. Imported {total_events} events."); break
+                # Transform (Quan trọng: Gọi hàm transform để tính toán Level Analytics)
+                try:
+                    transform_events_to_level_analytics(app_id, data)
+                    log(f"🔄 Transformed analytics for {total} events.")
+                except Exception as te:
+                    log(f"⚠️ Transform Error: {te}")
+
+                status = "Success"; log("🎉 Done."); break
             
-            elif resp.status_code == 202:
-                log(f"⏳ Server 202. Waiting 180s..."); 
-                if stop_event.wait(180): status = "Cancelled"; break
+            elif r.status_code == 202:
+                log("⏳ 202 Waiting 180s..."); 
+                if stop_event.wait(180): status="Cancelled"; break
             else:
-                log(f"❌ Error {resp.status_code}"); status = "Failed"; break
+                log(f"❌ Error {r.status_code}"); status="Failed"; break
         
-        # Cập nhật kết quả cuối cùng
-        conn_end = get_db(); cur_end = conn_end.cursor()
-        cur_end.execute("UPDATE job_history SET end_time=NOW(), status=%s, total_events=%s WHERE id=%s", (status, total_events, hist_id))
-        conn_end.commit(); conn_end.close()
-    
-    except Exception as e:
-        log(f"❌ Critical Error: {str(e)}")
+        # Finalize
+        conn3 = get_db(); cur3 = conn3.cursor()
+        cur3.execute("UPDATE job_history SET end_time=NOW(), status=%s, total_events=%s WHERE id=%s", (status, total, hist_id))
+        conn3.commit(); conn3.close()
+
+    except Exception as e: log(f"❌ Error: {e}")
     finally:
-        set_system_busy(False)
+        # [QUAN TRỌNG] Giải phóng App để nó có thể chạy job khác
+        unlock_app(app_id)
+        if hist_id and hist_id in JOB_STOP_EVENTS: del JOB_STOP_EVENTS[hist_id]
 
 # PHẦN 5: API ENDPOINTS (ĐÃ CẬP NHẬT DASHBOARD)
 @app.route("/monitor/history", methods=['GET'])
@@ -1118,25 +1069,40 @@ def get_levels(app_id):
 
 @app.route("/dashboard/<int:app_id>/level-detail", methods=['GET'])
 def get_level_detail(app_id):
-    level_id = request.args.get('level_id') # Level người dùng chọn từ menu
+    level_id = request.args.get('level_id')
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
     
+    # Default return để chống crash
+    default_resp = {
+        "success": True, 
+        "metrics": {"total_plays":0, "win_rate":0, "arpu":0, "avg_balance":0, "top_item":"None"},
+        "funnel": [], "booster_usage": [], "cost_distribution": [],
+        "logs": {"data": [], "pagination": {"current": 1, "total_pages": 0, "total_records": 0}}
+    }
+
     try: page = int(request.args.get('page', 1)); limit = int(request.args.get('limit', 50))
     except: page=1; limit=50
     offset = (page - 1) * limit
 
     conn = get_db()
-    if not conn: return jsonify({"success": False}), 500
+    if not conn: return jsonify(default_resp), 500
     
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Config Booster Map (Fallback)
-        PRICE_MAP = {"Hammer": 120, "Magnet": 80, "Add": 60, "Unlock": 190, "Clear": 120}
-        DISPLAY_MAP = {"Hammer": "Hammer 🔨", "Magnet": "Magnet 🧲", "Add": "Add Moves ➕"}
+        # 1. SETUP CONFIG & MAP GIÁ
+        # Hardcode danh sách Item của Game 1 để đảm bảo hiện tên đẹp
+        PRICE_MAP = {
+            "Hammer": 120, "Magnet": 80, "Add": 60, "Unlock": 190, "Clear": 120, "Revive": 190,
+            "booster_Hammer": 120, "booster_Magnet": 80, "booster_Add": 60, "booster_Unlock": 190
+        }
+        DISPLAY_MAP = {
+            "Hammer": "Hammer 🔨", "Magnet": "Magnet 🧲", "Add": "Add Moves ➕", 
+            "Unlock": "Unlock 🔓", "Clear": "Clear 🧹", "Revive": "Revive 💖"
+        }
         
-        # Cố gắng load config xịn từ DB
+        # Cố gắng lấy thêm từ DB nếu có
         try:
             cfg = get_app_config(cur, app_id)
             if cfg and 'boosters' in cfg:
@@ -1148,61 +1114,80 @@ def get_level_detail(app_id):
                         DISPLAY_MAP[cl] = nm; DISPLAY_MAP[k] = nm
         except: pass
 
-        # LẤY TOÀN BỘ LOG TRONG KHOẢNG THỜI GIAN (Lọc Level bằng Python cho chắc)
-        where = "WHERE app_id = %s"; params = [app_id]
+        # 2. BỘ LỌC SQL "LỎNG" (LOOSE FILTER)
+        # Chỉ cần thấy key level và số level nằm trên cùng 1 dòng là lấy về.
+        # Python sẽ lọc chính xác sau. Cách này nhanh và không bao giờ sót.
+        where = "WHERE app_id = %s"
+        params = [app_id]
+        
+        # Regex: Tìm (levelID hoặc missionID...) theo sau là bất kỳ ký tự nào, rồi đến số Level
+        # Ví dụ bắt được: "levelID": 90, "levelID": "90", \"levelID\":90
+        level_regex = f'(levelID|level_display|missionID).*?{level_id}'
+        where += f" AND event_json ~ '{level_regex}'"
+
         if start_date: where += " AND created_at >= %s"; params.append(start_date + " 00:00:00")
         if end_date: where += " AND created_at <= %s"; params.append(end_date + " 23:59:59")
-        
-        # Sắp xếp mới nhất trước
-        cur.execute(f"SELECT created_at, event_name, event_json FROM event_logs {where} ORDER BY created_at DESC", tuple(params))
-        all_rows = cur.fetchall()
 
-        # --- XỬ LÝ PYTHON ---
+        # 3. LẤY DỮ LIỆU
+        cur.execute(f"SELECT created_at, event_name, event_json FROM event_logs {where} ORDER BY created_at DESC", tuple(params))
+        rows = cur.fetchall()
+
+        # 4. XỬ LÝ PYTHON (CHÍNH XÁC)
         target_lvl = str(level_id)
         filtered_rows = []
         
         metrics = {"start":0, "win":0, "fail":0, "spend":0, "rev":0}
+        cost_dist = {"win_cost": 0, "fail_cost": 0}
         b_counts = {}
         
-        start_set = {"missionStart", "missionStart_Daily", "level_start", "level_loading_start"}
-        win_set = {"missionComplete", "missionComplete_Daily", "level_win"}
-        fail_set = {"missionFail", "missionFail_Daily", "level_fail", "level_lose"}
+        # Danh sách Event của Game 1 & 2
+        start_set = {"missionStart", "missionStart_Daily", "level_start", "level_loading_start", "missionStart_WeeklyQuestTutor"}
+        win_set = {"missionComplete", "missionComplete_Daily", "level_win", "missionComplete_WeeklyQuestTutor"}
+        fail_set = {"missionFail", "missionFail_Daily", "level_fail", "level_lose", "missionFail_WeeklyQuestTutor"}
 
-        for r in all_rows:
-            # MŨI KHOAN V95
+        for r in rows:
+            # Dùng hàm universal_flatten (Đã có từ V95)
             data = universal_flatten(r['event_json'])
             
-            # Kiểm tra Level (Chấp nhận cả số và chuỗi)
-            row_lvl = str(data.get('levelID') or data.get('level_display') or data.get('missionID') or "")
-            if row_lvl != target_lvl: continue
+            # Kiểm tra Level CHÍNH XÁC tại đây
+            # Lấy tất cả các trường có thể là level
+            l_val = str(data.get('levelID') or data.get('level_display') or data.get('missionID') or "")
             
-            # Nếu khớp level -> Lưu lại để xử lý tiếp
+            # So sánh string: "90" == "90"
+            if l_val != target_lvl: continue
+            
+            # Lưu lại
             r_dict = dict(r); r_dict['parsed'] = data
             filtered_rows.append(r_dict)
             
             evt = r['event_name']
+            
+            # Tính Metrics
             if evt in start_set: metrics['start'] += 1
             elif evt in win_set: metrics['win'] += 1
             elif evt in fail_set: metrics['fail'] += 1
             
-            # Tiền
+            # Tính Tiền
             money = int(data.get('coin_spent') or data.get('coin_cost') or 0)
             if money > 0:
                 metrics['spend'] += 1
                 metrics['rev'] += money
-            
-            # Booster (Quét tất cả key)
+                if evt in win_set: cost_dist['win_cost'] += money
+                elif evt in fail_set: cost_dist['fail_cost'] += money
+
+            # Tính Booster
             for k, v in data.items():
+                # Game 1 thường dùng key: booster_Hammer, revive_boosterClear
                 if ('booster' in k or 'revive' in k) and str(v).isdigit() and int(v) > 0:
                     clean = k.replace('booster_', '').replace('revive_', '')
                     b_counts[clean] = b_counts.get(clean, 0) + int(v)
 
-        # TÍNH TOÁN METRICS CUỐI CÙNG
+        # 5. TỔNG HỢP KẾT QUẢ
         real_plays = metrics['win'] + metrics['fail']
-        if real_plays == 0: real_plays = metrics['start']
-        win_rate = round((metrics['win']/real_plays)*100, 1) if real_plays > 0 else 0
+        if real_plays == 0: real_plays = metrics['start'] # Fallback nếu chưa có kết quả
         
-        # Danh sách Booster
+        win_rate = round((metrics['win'] / real_plays)*100, 1) if real_plays > 0 else 0
+        
         b_list = []
         for k, c in b_counts.items():
             nm = DISPLAY_MAP.get(k, k.capitalize())
@@ -1214,26 +1199,34 @@ def get_level_detail(app_id):
         arpu = sum(x['revenue'] for x in b_list)
 
         final_metrics = { "total_plays": real_plays, "win_rate": win_rate, "arpu": arpu, "avg_balance": 0, "top_item": top_item }
+        
         funnel = [
-            {"event_type": "START", "count": real_plays, "revenue": 0},
+            {"event_type": "START", "count": metrics['start'], "revenue": 0}, # Dùng metrics['start'] cho đúng phễu
             {"event_type": "WIN", "count": metrics['win'], "revenue": 0},
             {"event_type": "SPEND", "count": metrics['spend'], "revenue": metrics['rev']},
             {"event_type": "FAIL", "count": metrics['fail'], "revenue": 0}
         ]
+        
+        cost_arr = []
+        if cost_dist['win_cost'] > 0: cost_arr.append({"name": "Cost to Win", "value": cost_dist['win_cost']})
+        if cost_dist['fail_cost'] > 0: cost_arr.append({"name": "Wasted on Fail", "value": cost_dist['fail_cost']})
 
-        # PHÂN TRANG (Pagination)
+        # Pagination
         total_rec = len(filtered_rows)
         paged_data = filtered_rows[offset : offset + limit]
-        
         proc_logs = []
+        
         for r in paged_data:
             d = r['parsed']
             u = d.get('userID') or d.get('uuid') or "Guest"
             dt = []
             if d.get('coin_spent'): dt.append(f"💸 -{d['coin_spent']}")
+            if d.get('coin_balance'): dt.append(f"💰 {d['coin_balance']}")
+            
             for k,v in d.items():
-                if ('booster' in k or 'revive' in k) and int(v) > 0: 
-                    dt.append(f"⚡ {k.replace('booster_', '')} x{v}")
+                if ('booster' in k or 'revive' in k) and int(v) > 0:
+                    clean = k.replace('booster_', '').replace('revive_', '') 
+                    dt.append(f"⚡ {clean} x{v}")
             
             proc_logs.append({
                 "time": r['created_at'].strftime('%H:%M:%S %d/%m'),
@@ -1246,12 +1239,13 @@ def get_level_detail(app_id):
         return jsonify({
             "success": True,
             "metrics": final_metrics, "funnel": funnel, "booster_usage": b_list, 
+            "cost_distribution": cost_arr,
             "logs": { "data": proc_logs, "pagination": { "current": page, "total_pages": (total_rec+limit-1)//limit, "total_records": total_rec } }
         })
 
     except Exception as e:
-        print(f"Level Detail Error V95: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        print(f"Level Detail Error V97: {e}")
+        return jsonify(default_resp)
     finally: conn.close()
 
 @app.route("/dashboard/<int:app_id>/strategic", methods=['GET'])
@@ -1265,34 +1259,32 @@ def get_strategic_overview(app_id):
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # 1. DANH SÁCH SỰ KIỆN TỔNG HỢP (Game 1 + Game 2)
-        start_set = {"missionStart", "missionStart_Daily", "level_start", "level_loading_start", "level_first_start"}
-        fail_set = {"missionFail", "missionFail_Daily", "level_fail", "level_lose"}
+        start_set = {"missionStart", "missionStart_Daily", "level_start", "level_loading_start", "missionStart_WeeklyQuestTutor"}
+        fail_set = {"missionFail", "missionFail_Daily", "level_fail", "level_lose", "missionFail_WeeklyQuestTutor"}
         
-        # 2. LẤY DỮ LIỆU THÔ (FULL SCAN)
+        # LẤY HẾT DATA (Chấp nhận nặng một chút nhưng chính xác cho cả 2 game)
+        # Vì biểu đồ này cần tổng hợp mọi level, ta không filter level cụ thể ở SQL
         where = "WHERE app_id = %s"; params = [app_id]
         if start_date: where += " AND created_at >= %s"; params.append(start_date + " 00:00:00")
         if end_date: where += " AND created_at <= %s"; params.append(end_date + " 23:59:59")
         
-        # Chỉ lấy cột cần thiết để tối ưu tốc độ
         cur.execute(f"SELECT event_name, event_json FROM event_logs {where}", tuple(params))
         rows = cur.fetchall()
         
-        # 3. TÍNH TOÁN (PYTHON AGGREGATION)
-        stats = {} # {lvl: {plays, fails, rev}}
+        stats = {} 
 
         for r in rows:
-            # BƯỚC QUAN TRỌNG: KHOAN SÂU DỮ LIỆU
             data = universal_flatten(r['event_json'])
             
             # Tìm Level
             lvl_raw = data.get('levelID') or data.get('level_display') or data.get('missionID')
             if not lvl_raw: continue
             
-            try:
-                lvl_num = int(''.join(filter(str.isdigit, str(lvl_raw))))
-                if lvl_num > 2000: continue
-            except: continue
+            # Lấy số level
+            digits = ''.join(filter(str.isdigit, str(lvl_raw)))
+            if not digits: continue
+            lvl_num = int(digits)
+            if lvl_num > 2000: continue
             
             if lvl_num not in stats: stats[lvl_num] = {"plays": 0, "fails": 0, "rev": 0}
             
@@ -1300,14 +1292,13 @@ def get_strategic_overview(app_id):
             if evt in start_set: stats[lvl_num]['plays'] += 1
             elif evt in fail_set: stats[lvl_num]['fails'] += 1
             
-            # Cộng tiền (Ưu tiên coin_spent, dự phòng coin_cost)
             money = data.get('coin_spent') or data.get('coin_cost') or 0
             try: stats[lvl_num]['rev'] += float(money)
             except: pass
 
-        # 4. FORMAT CHART
         chart = []
         for lvl, val in stats.items():
+            # Chỉ hiện level có tương tác
             if val['plays'] > 0 or val['rev'] > 0 or val['fails'] > 0:
                 fr = round((val['fails'] / val['plays']) * 100, 1) if val['plays'] > 0 else 0
                 if fr > 100: fr = 100.0
@@ -1320,7 +1311,7 @@ def get_strategic_overview(app_id):
         return jsonify({"success": True, "balance_chart": chart})
 
     except Exception as e:
-        print(f"Strategic Error V95: {e}")
+        print(f"Strategic Error V97: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
     finally: conn.close()
 
@@ -1545,6 +1536,26 @@ def search_events():
         conn.close()
 
 if __name__ == '__main__':
+    # --- [V105] CLEANUP ZOMBIE JOBS ON STARTUP ---
+    # Tự động đánh dấu Failed cho các job đang treo do server restart
+    try:
+        conn = get_db()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE job_history 
+                SET status = 'Failed', end_time = NOW(), logs = logs || E'\n[System Restart] Job died unexpectedly.'
+                WHERE status IN ('Running', 'Processing')
+            """)
+            killed_count = cur.rowcount
+            if killed_count > 0:
+                print(f"🧹 Cleanup: Killed {killed_count} jobs from previous session.")
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        print(f"⚠️ Cleanup Warning: {e}")
+
+    # Khởi động các luồng ngầm
     t1 = threading.Thread(target=run_scheduler_loop)
     t1.daemon = True
     t1.start()

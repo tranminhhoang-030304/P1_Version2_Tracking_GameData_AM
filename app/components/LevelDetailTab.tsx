@@ -149,7 +149,7 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
             <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 shadow-sm">
               <h4 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><PieIcon className="text-emerald-500" size={18} /> Win/Fail Cost</h4>
               <div className="h-[250px] flex items-center justify-center">
-                {data.cost_distribution.length > 0 ? (
+                {data.cost_distribution?.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
@@ -160,7 +160,7 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
                         innerRadius={60} outerRadius={80}
                         paddingAngle={5}
                       >
-                        {data.cost_distribution.map((entry: any, index: number) => (
+                        {data.cost_distribution?.map((entry: any, index: number) => (
                           <Cell key={`cell-${index}`} fill={entry.name === 'Cost to Win' ? '#10b981' : '#ef4444'} />
                         ))}
                       </Pie>
@@ -190,7 +190,7 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
                     <Tooltip
                       cursor={{ fill: 'transparent' }}
                       content={({ active, payload }) => {
-                        if (active && payload && payload.length) {
+                        if (active && Array.isArray(payload) && payload.length >0) {
                           const item = payload[0].payload; // Lấy full dữ liệu (gồm cả revenue)
                           return (
                             <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-xl text-xs z-50">
@@ -223,7 +223,7 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
                     <Bar dataKey="usage_count" fill="#f59e0b" radius={[0, 4, 4, 0]} barSize={16} name="Used" />
                   </BarChart>
                 </ResponsiveContainer>
-                {data.booster_usage.length === 0 && (
+                {data.booster_usage?.length === 0 && (
                   <div className="text-center text-slate-400 text-xs mt-10">No items used</div>
                 )}
               </div>
