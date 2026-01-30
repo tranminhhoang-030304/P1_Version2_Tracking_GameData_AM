@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # -----------------------------------------------------------------
+  # SERVICE 1: DATABASE (PostgreSQL)
+  # -----------------------------------------------------------------
+  db:
+    image: postgres:17-alpine
+    container_name: analytics_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      # Mount dữ liệu ra thư mục ./postgres_data ở cùng cấp file này
+      - ./postgres_data:/var/lib/postgresql/data
+    networks:
+      - analytics_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # -----------------------------------------------------------------
+  # SERVICE 2: BACKEND (FastAPI)
+  # -----------------------------------------------------------------
+  backend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: analytics_backend
+    restart: always
+    # Cập nhật lệnh chạy trỏ vào api/index.py
+    command: gunicorn -w 4 -k uvicorn.workers.UvicornWorker api.index:app --bind 0.0.0.0:8000
+    
+    # Chỉ mở port nội bộ (cho Nginx kết nối)
+    ports:
+      - "127.0.0.1:8000:8000"
+    
+    env_file:
+      - .env
+    
+    depends_on:
+      db:
+        condition: service_healthy
+    
+    networks:
+      - analytics_network
+
+networks:
+  analytics_network:
+    driver: bridge
