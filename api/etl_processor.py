@@ -2,12 +2,13 @@ import json
 from datetime import datetime, timedelta
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import os
 
 # Copy cấu hình DB từ main.py sang (hoặc import từ config nếu có)
-DB_HOST = "localhost"
-DB_NAME = "p1_gamedata"
-DB_USER = "postgres"
-DB_PASS = "tranminhhoang-030304"
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASS")
 
 def get_db_connection():
     try:

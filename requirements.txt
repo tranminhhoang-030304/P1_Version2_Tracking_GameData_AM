@@ -7,3 +7,4 @@ pydantic-settings
 apscheduler
 requests
 psycopg2-binary
+flask
