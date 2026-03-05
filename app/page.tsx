@@ -1,13 +1,16 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import LevelDetailTab from './components/LevelDetailTab';
 import DataExplorer from './components/DataExplorer';
+import DataCheck from './components/DataCheck';
+import { EventDictionary } from './components/EventDictionary'; 
+
 import {
   LayoutDashboard, Settings, Activity, Server,
-  Play, CheckCircle, Save, Plus, BarChart3, List,
+  Play, CheckCircle, Save, Plus, BarChart3, List, 
   Calendar, Clock, AlertCircle, X, RotateCcw, FileText, Trash2, StopCircle, RefreshCw,
   Bot, Zap, FlaskConical, Filter, PieChart as PieIcon, Coins, Gamepad2, Database,
-  ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, TrendingUp, Users, ChevronDown, Banknote
+  ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, TrendingUp, Users, ChevronDown, Banknote, Table, Check, ChevronsUpDown
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar,
@@ -93,31 +96,146 @@ export default function GameAnalyticsApp() {
 
   useEffect(() => { fetchApps(); }, []);
 
+  // --- LOGIC DROPDOWN GAME SWITCHER ---
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Đóng dropdown khi click ra ngoài
+  useEffect(() => {
+    function handleClickOutside(event: any) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   return (
     <div className="flex h-screen bg-slate-50 dark:bg-slate-900 font-sans text-slate-800 dark:text-slate-200">
       {/* SIDEBAR */}
-      <aside className="w-64 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-10 shrink-0">
+      <aside className="w-64 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-10 shrink-0 transition-all duration-300">
         <div className="p-6 h-full flex flex-col">
+          
+          {/* 1. LOGO HEADER */}
           <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 mb-8">
             <Activity size={28} strokeWidth={2.5} />
             <span className="text-xl font-bold tracking-tight">GameStats</span>
           </div>
 
-          <div className="mb-6 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-700">
+          {/* 2. GAME SWITCHER DROPDOWN (SMART MAPPING) */}
+          <div className="mb-6 relative" ref={dropdownRef}>
             <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2">Active Project</p>
-            <div className="font-medium text-slate-700 dark:text-slate-200 truncate" title={selectedApp?.name}>
-              {selectedApp ? selectedApp.name : 'Select a Game'}
-            </div>
+            
+            {/* --- KHU VỰC CẤU HÌNH ẢNH (MAPPING) --- */}
+            {(() => {
+                // Bạn điền tên file ảnh tương ứng với ID game vào đây nhé
+                const GAME_IMAGES: Record<number, string> = {
+                    1: "/game-1.jpg", // Ảnh game Woolen Yarn
+                    2: "/game-2.jpg", // Ảnh game Loopy Bus
+                    3: "/game-3.jpg", // Ảnh game Candy Crush (nếu có)
+                };
+
+                // Hàm lấy ảnh: Ưu tiên DB -> Map -> Mặc định
+                const getGameIcon = (app: any) => {
+                    if (app?.icon_url) return app.icon_url;
+                    return GAME_IMAGES[app?.id] || "/default-game.png"; 
+                };
+
+                return (
+                <>
+                    {/* NÚT BẤM CHÍNH (ACTIVE) */}
+                    <button 
+                    onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                    className="w-full flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl hover:border-blue-400 hover:bg-white dark:hover:bg-slate-800 transition-all group"
+                    >
+                    <div className="flex items-center gap-3 overflow-hidden">
+                        <div className="w-8 h-8 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center flex-shrink-0 shadow-sm overflow-hidden">
+                            <img 
+                                src={getGameIcon(selectedApp)} 
+                                alt="active-icon" 
+                                className="w-full h-full object-cover"
+                                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} 
+                            />
+                        </div>
+                        
+                        <div className="font-medium text-slate-700 dark:text-slate-200 truncate text-sm text-left">
+                        {selectedApp ? selectedApp.name : 'Select Game'}
+                        </div>
+                    </div>
+                    <ChevronsUpDown size={16} className="text-slate-400 group-hover:text-blue-500 transition-colors" />
+                    </button>
+
+                    {/* DANH SÁCH SỔ XUỐNG */}
+                    {isDropdownOpen && (
+                    <div className="absolute top-full left-0 w-full mt-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 animate-in fade-in zoom-in-95 overflow-hidden">
+                        
+                        <div className="max-h-60 overflow-y-auto p-1 custom-scrollbar">
+                        {apps.map((app: any) => (
+                            <button
+                            key={app.id}
+                            onClick={() => {
+                                setSelectedApp(app);
+                                setIsDropdownOpen(false);
+                            }}
+                            className={`w-full flex items-center gap-3 p-2 rounded-lg text-sm transition-colors ${
+                                selectedApp?.id === app.id 
+                                ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' 
+                                : 'hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
+                            }`}
+                            >
+                            {/* Icon nhỏ trong list */}
+                            <div className={`w-6 h-6 rounded flex items-center justify-center border overflow-hidden flex-shrink-0 ${
+                                selectedApp?.id === app.id ? 'bg-white border-blue-200' : 'bg-slate-100 border-slate-200 dark:bg-slate-900 dark:border-slate-600'
+                            }`}>
+                                <img 
+                                    src={getGameIcon(app)} 
+                                    alt="icon" 
+                                    className="w-full h-full object-cover" 
+                                />
+                            </div>
+
+                            <span className="flex-1 text-left truncate">{app.name}</span>
+                            {selectedApp?.id === app.id && <Check size={14} />}
+                            </button>
+                        ))}
+                        </div>
+
+                        {/* Nút Add New */}
+                        <div className="p-1 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
+                        <button 
+                            onClick={() => { setActiveTab('settings'); setIsDropdownOpen(false); }}
+                            className="w-full flex items-center gap-2 p-2 text-xs font-medium text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                        >
+                            <Plus size={14} /> Add New Project
+                        </button>
+                        </div>
+                    </div>
+                    )}
+                </>
+                );
+            })()}
           </div>
 
-          <nav className="space-y-2 flex-1">
-            <NavItem icon={Settings} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
-            <NavItem icon={Server} label="Monitor" active={activeTab === 'monitor'} onClick={() => setActiveTab('monitor')} />
+          {/* 3. NAVIGATION (GIỮ NGUYÊN CODE CỦA BẠN + CẬP NHẬT DATA CHECK ICON) */}
+          <nav className="space-y-2 flex-1 overflow-y-auto custom-scrollbar pr-1">
             <NavItem icon={LayoutDashboard} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
+            <NavItem icon={Table} label="Data Check" active={activeTab === 'datacheck'} onClick={() => setActiveTab('datacheck')} />
             <NavItem icon={Database} label="Data Explorer" active={activeTab === 'data'} onClick={() => setActiveTab('data')} />
+            
+            <div className="pt-4 pb-2">
+               <div className="h-px bg-slate-100 dark:bg-slate-700 w-full mb-4"></div>
+               <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider mb-2 px-2">System</p>
+            </div>
+            
+            <NavItem icon={Server} label="Monitor" active={activeTab === 'monitor'} onClick={() => setActiveTab('monitor')} />
+            <NavItem icon={Settings} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
           </nav>
 
-          <div className="text-xs text-center text-slate-400 mt-4">v1.5.0 Analytics Config</div>
+          {/* 4. FOOTER */}
+          <div className="text-xs text-center text-slate-400 mt-4 pt-4 border-t border-slate-100 dark:border-slate-700">
+            v1.5.0 Analytics Config
+          </div>
         </div>
       </aside>
 
@@ -158,12 +276,26 @@ export default function GameAnalyticsApp() {
             </div>
           )
         )}
+
+        {activeTab === 'datacheck' && (
+          selectedApp ? (
+            <DataCheck appId={selectedApp.id}/>
+          ) : (
+            <div className="flex h-full items-center justify-center text-slate-400 flex-col gap-4">
+              <Table size={48} className="opacity-20" />
+              Please select a game first
+            </div>
+          )
+        )
+        }
+
       </main>
     </div>
   );
 }
 
 // --- VIEW: SETTINGS (UPDATED) ---
+// --- VIEW: SETTINGS (UPDATED WITH EVENT DICTIONARY) ---
 function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
   const [isAdding, setIsAdding] = useState(false);
   const [showAnalyticsConfig, setShowAnalyticsConfig] = useState(false); // Modal state
@@ -220,7 +352,6 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
   }, [selectedApp]);
 
   // --- LOGIC MỚI: ANALYTICS CONFIG ---
-
   // Load Config khi mở modal
   const handleOpenAnalytics = async () => {
     if (!selectedApp) return;
@@ -279,7 +410,6 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
   }
 
   // --- LOGIC CŨ: MAIN APP SAVE/DELETE ---
-
   const handleSubmit = async () => {
     const url = isAdding ? `${API_URL}/apps` : `${API_URL}/apps/${selectedApp.id}`;
     const method = isAdding ? 'POST' : 'PUT';
@@ -313,7 +443,7 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in zoom-in duration-300 relative">
+    <div className="space-y-8 animate-in fade-in zoom-in duration-300 relative pb-20">
       {/* 1. LIST APPS GRID */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {apps.map((app: any) => (
@@ -414,7 +544,6 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
                       <thead className="bg-slate-50 dark:bg-slate-900 sticky top-0 z-10">
                         <tr>
                           <th className="p-2 border-b font-medium text-slate-500">Log Event</th>
-                          {/* BẠN ĐANG THIẾU DÒNG NÀY: */}
                           <th className="p-2 border-b font-medium text-slate-500">Display</th>
                           <th className="p-2 border-b font-medium text-slate-500 text-right">Cost</th>
                         </tr>
@@ -423,10 +552,7 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
                         {previewData.boosters.map((b: any, i: number) => (
                           <tr key={i} className="border-b last:border-0 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
                             <td className="p-2 font-mono text-slate-600 dark:text-slate-300 truncate max-w-[120px]" title={b.event_name}>{b.event_name}</td>
-
-                            {/* BẠN ĐANG THIẾU DÒNG NÀY: */}
                             <td className="p-2 text-slate-700 dark:text-slate-200 font-medium truncate max-w-[100px]">{b.display_name || '-'}</td>
-
                             <td className="p-2 text-right font-mono text-orange-600 font-bold">{b.coin_cost}</td>
                           </tr>
                         ))}
@@ -455,7 +581,13 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
         </div>
       </div>
 
-      {/* 3. MODAL CONFIG ANALYTICS (MỚI - POPUP) */}
+      {/* --- 3. EVENT DICTIONARY (PHẦN MỚI CẤY GHÉP) --- */}
+      {/* Chỉ hiện khi không phải mode Add New và đã chọn game */}
+      {!isAdding && selectedApp && (
+        <EventDictionary appId={selectedApp.id} />
+      )}
+
+      {/* 4. MODAL CONFIG ANALYTICS (MỚI - POPUP) */}
       {showAnalyticsConfig && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white dark:bg-slate-800 w-full max-w-3xl rounded-xl shadow-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95">
