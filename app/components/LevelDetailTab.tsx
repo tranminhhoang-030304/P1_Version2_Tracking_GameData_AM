@@ -4,18 +4,35 @@ import React, { useState, useEffect } from 'react';
 import {
   Activity, Play, ShoppingCart,
   Filter, ChevronDown, Trophy, Skull, Coins, Clock, Calendar, AlertTriangle,
-  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Zap, PieChart as PieIcon
+  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Zap, PieChart as PieIcon, PieChart as PieChartIcon
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend
 } from 'recharts';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
 interface LevelDetailProps { appId: number; }
 
 export default function LevelDetailTab({ appId }: LevelDetailProps) {
+    // Hàm lấy khoảng ngày mặc định (Ví dụ: ... ngày gần nhất)
+  const getDefaultRange = (days = 1) => {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - days); 
+      const formatLocal = (d: Date) => {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    };
+    return {
+        start: formatLocal(start),
+        end: formatLocal(end)
+    };
+  };
   const [levels, setLevels] = useState<string[]>([]);
   const [selectedLevel, setSelectedLevel] = useState<string>("");
-  const [dateRange, setDateRange] = useState({ start: '', end: '' });
+  const [dateRange, setDateRange] = useState(getDefaultRange(1));
 
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -23,7 +40,7 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
 
   // 1. Fetch List Level
   useEffect(() => {
-    fetch(`http://127.0.0.1:8080/api/levels/${appId}`)
+    fetch(`${API_URL}/api/levels/${appId}`)
       .then(res => res.json())
       .then(arr => {
         if (Array.isArray(arr) && arr.length > 0) {
@@ -38,7 +55,7 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
   useEffect(() => {
     if (!selectedLevel) return;
     setLoading(true);
-    let url = `http://127.0.0.1:8080/dashboard/${appId}/level-detail?level_id=${selectedLevel}&page=${logPage}&limit=50`;
+    let url = `${API_URL}/dashboard/${appId}/level-detail?level_id=${selectedLevel}&page=${logPage}&limit=50`;
     if (dateRange.start) url += `&start_date=${dateRange.start}`;
     if (dateRange.end) url += `&end_date=${dateRange.end}`;
 
@@ -145,11 +162,13 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
               </div>
             </div>
 
-            {/* [CENTER] COST EFFICIENCY PIE CHART */}
+            {/* [CENTER] COST EFFICIENCY PIE CHART (FIXED COLOR LOGIC) */}
             <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h4 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><PieIcon className="text-emerald-500" size={18} /> Win/Fail Cost</h4>
+              <h4 className="font-bold text-slate-700 mb-4 flex items-center gap-2">
+                <PieChartIcon className="text-emerald-500" size={18} /> Win/Fail Cost
+              </h4>
               <div className="h-[250px] flex items-center justify-center">
-                {data.cost_distribution?.length > 0 ? (
+                {data.cost_distribution.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
@@ -160,16 +179,26 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
                         innerRadius={60} outerRadius={80}
                         paddingAngle={5}
                       >
-                        {data.cost_distribution?.map((entry: any, index: number) => (
-                          <Cell key={`cell-${index}`} fill={entry.name === 'Cost to Win' ? '#10b981' : '#ef4444'} />
+                        {data.cost_distribution.map((entry: any, index: number) => (
+                          <Cell 
+                            key={`cell-${index}`} 
+                            // [QUAN TRỌNG] Ưu tiên lấy màu từ API gửi xuống (entry.color)
+                            // Nếu không có mới dùng màu dự phòng
+                            fill={entry.color || ['#3b82f6', '#f59e0b', '#10b981', '#ef4444'][index % 4]} 
+                          />
                         ))}
                       </Pie>
-                      <Tooltip contentStyle={{ borderRadius: '8px' }} formatter={(val: number) => `${val.toLocaleString()} Coins`} />
-                      <Legend verticalAlign="bottom" height={36} />
+                      <Tooltip 
+                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
+                        formatter={(val: number) => [`${val.toLocaleString()} Coins`, 'Cost']} 
+                      />
+                      <Legend verticalAlign="bottom" height={36} iconType="circle" />
                     </PieChart>
                   </ResponsiveContainer>
                 ) : (
-                  <div className="text-slate-400 italic text-center text-sm">No spending data<br />recorded for this level</div>
+                  <div className="text-slate-400 italic text-center text-sm">
+                    No spending data<br />recorded for this level
+                  </div>
                 )}
               </div>
             </div>
@@ -190,7 +219,7 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
                     <Tooltip
                       cursor={{ fill: 'transparent' }}
                       content={({ active, payload }) => {
-                        if (active && Array.isArray(payload) && payload.length >0) {
+                        if (active && payload && payload.length) {
                           const item = payload[0].payload; // Lấy full dữ liệu (gồm cả revenue)
                           return (
                             <div className="bg-white p-3 border border-slate-200 shadow-xl rounded-xl text-xs z-50">
@@ -223,7 +252,7 @@ export default function LevelDetailTab({ appId }: LevelDetailProps) {
                     <Bar dataKey="usage_count" fill="#f59e0b" radius={[0, 4, 4, 0]} barSize={16} name="Used" />
                   </BarChart>
                 </ResponsiveContainer>
-                {data.booster_usage?.length === 0 && (
+                {data.booster_usage.length === 0 && (
                   <div className="text-center text-slate-400 text-xs mt-10">No items used</div>
                 )}
               </div>
