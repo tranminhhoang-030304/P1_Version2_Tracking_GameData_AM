@@ -19,13 +19,17 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  // Chỉ render Vercel Analytics khi deploy trên Vercel platform
+  // VERCEL env var chỉ có trên Vercel, không có trên server tự host
+  const isVercel = process.env.VERCEL === '1'
+  
   return (
     <html lang="en" suppressHydrationWarning >
       <body className={`font-sans antialiased`}>
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
           {children}
         </ThemeProvider>
-        <Analytics />
+        {isVercel && <Analytics />}
       </body>
     </html>
   )

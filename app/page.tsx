@@ -4,19 +4,19 @@ import LevelDetailTab from './components/LevelDetailTab';
 import DataExplorer from './components/DataExplorer';
 import DataCheck from './components/DataCheck';
 import { EventDictionary } from './components/EventDictionary'; 
-
 import {
   LayoutDashboard, Settings, Activity, Server,
   Play, CheckCircle, Save, Plus, BarChart3, List, 
   Calendar, Clock, AlertCircle, X, RotateCcw, FileText, Trash2, StopCircle, RefreshCw,
   Bot, Zap, FlaskConical, Filter, PieChart as PieIcon, Coins, Gamepad2, Database,
-  ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, TrendingUp, Users, ChevronDown, Banknote, Table, Check, ChevronsUpDown
+  ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, TrendingUp, Users, ChevronDown, Banknote, Table, Check, ChevronsUpDown, Download, Menu, ArrowUpRight, ArrowDownRight
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar,
   PieChart, Pie, Cell, Legend, Area, ComposedChart,
 } from 'recharts';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
 // --- TYPE DEFINITIONS ---
 interface AppConfig {
   id: number;
@@ -41,7 +41,6 @@ interface DashboardData {
   };
 }
 
-const API_URL = 'http://127.0.0.1:8080';
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
 
 const StatCard = ({ title, value, icon: Icon, color }: any) => (
@@ -70,6 +69,7 @@ const NavItem = ({ icon: Icon, label, active, onClick }: any) => (
     <span className="font-medium">{label}</span>
   </button>
 );
+
 
 export default function GameAnalyticsApp() {
   const [activeTab, setActiveTab] = useState('settings');
@@ -217,7 +217,7 @@ export default function GameAnalyticsApp() {
             })()}
           </div>
 
-          {/* 3. NAVIGATION (GIỮ NGUYÊN CODE CỦA BẠN + CẬP NHẬT DATA CHECK ICON) */}
+          {/* 3. NAVIGATION */}
           <nav className="space-y-2 flex-1 overflow-y-auto custom-scrollbar pr-1">
             <NavItem icon={LayoutDashboard} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
             <NavItem icon={Table} label="Data Check" active={activeTab === 'datacheck'} onClick={() => setActiveTab('datacheck')} />
@@ -232,12 +232,14 @@ export default function GameAnalyticsApp() {
             <NavItem icon={Settings} label="Settings" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
           </nav>
 
-          {/* 4. FOOTER */}
+          {/* --- 4. FOOTER --- */}
           <div className="text-xs text-center text-slate-400 mt-4 pt-4 border-t border-slate-100 dark:border-slate-700">
-            v1.5.0 Analytics Config
-          </div>
-        </div>
-      </aside>
+            <div>v1.5.0 Analytics Config</div>
+          </div> 
+          
+          </div> 
+
+        </aside>
 
       {/* MAIN CONTENT */}
       <main className="flex-1 overflow-y-auto p-8 relative">
@@ -251,12 +253,12 @@ export default function GameAnalyticsApp() {
         )}
 
         {activeTab === 'monitor' && (
-          <MonitorView selectedApp={selectedApp} />
+          // THÊM apps={apps}
+          <MonitorView selectedApp={selectedApp} apps={apps} /> 
         )}
 
         {activeTab === 'dashboard' && (
           selectedApp ? (
-            // [FIX]: Chỉ cần truyền selectedApp, để api con tự lo việc fetch data
             <DashboardView selectedApp={selectedApp} />
           ) : (
             <div className="flex h-full items-center justify-center text-slate-400 flex-col gap-4">
@@ -294,26 +296,24 @@ export default function GameAnalyticsApp() {
   );
 }
 
-// --- VIEW: SETTINGS (UPDATED) ---
-// --- VIEW: SETTINGS (UPDATED WITH EVENT DICTIONARY) ---
+// --- VIEW: SETTINGS (KEEP AS IS) ---
 function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
   const [isAdding, setIsAdding] = useState(false);
   const [showAnalyticsConfig, setShowAnalyticsConfig] = useState(false); // Modal state
 
-  // Form chính (Giữ nguyên logic cũ)
+  // Form chính
   const [formData, setFormData] = useState({
     name: '', app_id: '', api_token: '',
     schedule_time: '12:00', interval_minutes: 60, is_active: true
   });
 
-  // Form Analytics (Mới thêm)
+  // Form Analytics
   const [analyticsData, setAnalyticsData] = useState<any>({
     events: { level_start: '', level_win: '', level_fail: '' },
     boosters: []
   });
   const [previewData, setPreviewData] = useState<any>(null);
 
-  // Effect: Sync dữ liệu khi chọn App
   useEffect(() => {
     if (isAdding) {
       setFormData({ name: '', app_id: '', api_token: '', schedule_time: '00:00', interval_minutes: 60, is_active: true });
@@ -329,7 +329,6 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
     }
   }, [selectedApp, isAdding]);
 
-  // --- THÊM EFFECT MỚI: Load Preview Data khi chọn App ---
   useEffect(() => {
     if (selectedApp?.id) {
       fetch(`${API_URL}/apps/${selectedApp.id}/analytics-config`)
@@ -338,7 +337,6 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
           return null;
         })
         .then(data => {
-          // Kiểm tra data có hợp lệ không trước khi set
           if (data && (data.events || (data.boosters && data.boosters.length > 0))) {
             setPreviewData(data);
           } else {
@@ -351,21 +349,17 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
     }
   }, [selectedApp]);
 
-  // --- LOGIC MỚI: ANALYTICS CONFIG ---
-  // Load Config khi mở modal
   const handleOpenAnalytics = async () => {
     if (!selectedApp) return;
     try {
       const res = await fetch(`${API_URL}/apps/${selectedApp.id}/analytics-config`);
       const data = await res.json();
-      // Nếu server trả về rỗng hoặc lỗi, dùng default
       setAnalyticsData(data.events ? data : {
         events: { level_start: '', level_win: '', level_fail: '' },
         boosters: []
       });
       setShowAnalyticsConfig(true);
     } catch (e) {
-      // Fallback nếu chưa có config
       setAnalyticsData({
         events: { level_start: '', level_win: '', level_fail: '' },
         boosters: []
@@ -389,7 +383,6 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
     } catch (e) { alert("Error saving config"); }
   }
 
-  // Quản lý list booster
   const addBooster = () => {
     setAnalyticsData({
       ...analyticsData,
@@ -409,7 +402,6 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
     setAnalyticsData({ ...analyticsData, boosters: newBoosters });
   }
 
-  // --- LOGIC CŨ: MAIN APP SAVE/DELETE ---
   const handleSubmit = async () => {
     const url = isAdding ? `${API_URL}/apps` : `${API_URL}/apps/${selectedApp.id}`;
     const method = isAdding ? 'POST' : 'PUT';
@@ -501,11 +493,10 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
           </div>
           <div className="space-y-2"><label className="text-sm font-medium">Schedule Time</label><input type="time" className="w-full px-4 py-2 rounded border" value={formData.schedule_time} onChange={e => setFormData({ ...formData, schedule_time: e.target.value })} /></div>
           <div className="space-y-2"><label className="text-sm font-medium">Interval (Min)</label><input type="number" className="w-full px-4 py-2 rounded border" value={formData.interval_minutes} onChange={e => setFormData({ ...formData, interval_minutes: parseInt(e.target.value) })} /></div>
-          <div className="flex items-center gap-3 mt-4"><input type="checkbox" className="w-5 h-5" checked={formData.is_active} onChange={e => setFormData({ ...formData, is_active: e.target.checked })} /><label className="text-sm font-medium">Active (Enable Auto-Sync)</label></div>
+          <div className="flex items-center gap-3 mt-4"><input type="checkbox" className="w-5 h-5" checked={formData.is_active} onChange={e => setFormData({ ...formData, is_active: e.target.checked })} /><label className="text-sm font-medium">Automatic Schedule</label></div>
         </div>
 
         {/* --- PHẦN MỚI: BẢNG PREVIEW CONFIG --- */}
-        {/* --- HIỂN THỊ PREVIEW DỰA TRÊN STATE MỚI --- */}
         {previewData && (
           <div className="mt-6 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden animate-in fade-in slide-in-from-top-2">
             {/* Header nhỏ */}
@@ -540,7 +531,6 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
                 {previewData.boosters && previewData.boosters.length > 0 ? (
                   <div className="max-h-32 overflow-y-auto custom-scrollbar border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800">
                     <table className="w-full text-xs text-left">
-                      {/* --- ĐOẠN CẦN SỬA LẠI Ở ĐÂY --- */}
                       <thead className="bg-slate-50 dark:bg-slate-900 sticky top-0 z-10">
                         <tr>
                           <th className="p-2 border-b font-medium text-slate-500">Log Event</th>
@@ -557,7 +547,6 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
                           </tr>
                         ))}
                       </tbody>
-                      {/* -------------------------------- */}
                     </table>
                   </div>
                 ) : (
@@ -581,13 +570,12 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
         </div>
       </div>
 
-      {/* --- 3. EVENT DICTIONARY (PHẦN MỚI CẤY GHÉP) --- */}
-      {/* Chỉ hiện khi không phải mode Add New và đã chọn game */}
+      {/* --- 3. EVENT DICTIONARY --- */}
       {!isAdding && selectedApp && (
         <EventDictionary appId={selectedApp.id} />
       )}
 
-      {/* 4. MODAL CONFIG ANALYTICS (MỚI - POPUP) */}
+      {/* 4. MODAL CONFIG ANALYTICS */}
       {showAnalyticsConfig && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white dark:bg-slate-800 w-full max-w-3xl rounded-xl shadow-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95">
@@ -675,81 +663,54 @@ function SettingsView({ apps, selectedApp, onSelectApp, onRefresh }: any) {
   );
 }
 
-function DashboardView({ selectedApp }: any) {
+// --- VIEW: DASHBOARD (KEEP AS IS) ---
+export function DashboardView({ selectedApp }: any) {
+  const getDefaultRange = (days = 1) => {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - days); 
+      const formatLocal = (d: Date) => {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    };
+    return {
+        start: formatLocal(start),
+        end: formatLocal(end)
+    };
+  }; 
+  const defaultDates = getDefaultRange(1);
+  const [startDate, setStartDate] = useState(defaultDates.start);
+  const [endDate, setEndDate] = useState(defaultDates.end);
+
   const [activeSubTab, setActiveSubTab] = useState<'overview' | 'level'>('overview');
 
   const [data, setData] = useState<any>(null);
-  const [strategicData, setStrategicData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-
-  // State lọc Level (Có Fallback array)
-  const [levels, setLevels] = useState<string[]>([]);
-  const [selectedOverviewLevel, setSelectedOverviewLevel] = useState<string>("");
-
-  // 1. Fetch Levels (Xóa Fallback)
-  useEffect(() => {
-    if (selectedApp) {
-      fetch(`${API_URL}/api/levels/${selectedApp.id}`)
-        .then(res => res.json())
-        .then(arr => {
-          if (Array.isArray(arr) && arr.length > 0) {
-            setLevels(arr);
-          } else {
-            setLevels([]); // Không bịa ra level 1,2,3,4,5 nữa
-          }
-        })
-        .catch(() => setLevels([]));
-    }
-  }, [selectedApp]);
-
-  // 2. Fetch Dashboard Overview
   const fetchDashboard = () => {
     if (!selectedApp) return;
     setLoading(true);
     const params = new URLSearchParams();
     if (startDate) params.append('start_date', startDate);
     if (endDate) params.append('end_date', endDate);
-    if (selectedOverviewLevel) params.append('level_id', selectedOverviewLevel);
-
+    
     fetch(`${API_URL}/dashboard/${selectedApp.id}?${params.toString()}`)
       .then(res => res.json())
-      .then(json => { if (json.success) setData(json); })
+      .then(json => { 
+        if (json.success) setData(json); 
+      })
+      .catch(console.error)
       .finally(() => setLoading(false));
   };
 
-  // 3. Fetch Strategic Chart
-  useEffect(() => {
-    if (selectedApp) {
-      fetch(`${API_URL}/dashboard/${selectedApp.id}/strategic`)
-        .then(res => res.json())
-        .then(data => { if (data.success) setStrategicData(data.balance_chart); });
-    }
-  }, [selectedApp]);
-
   useEffect(() => {
     if (activeSubTab === 'overview') fetchDashboard();
-  }, [selectedApp, startDate, endDate, selectedOverviewLevel, activeSubTab]);
-
-  // [MỚI] Hàm tính Avg Fail Rate từ biểu đồ để hiển thị lên KPI Card
-  const calculateAvgFailRate = () => {
-    if (!strategicData || strategicData.length === 0) return 0;
-    // Nếu đang lọc level cụ thể
-    if (selectedOverviewLevel) {
-      const lvl = strategicData.find((d: any) => d.name === `Lv.${selectedOverviewLevel}`);
-      return lvl ? lvl.fail_rate : 0;
-    }
-    // Nếu không lọc, tính trung bình
-    const total = strategicData.reduce((acc: any, curr: any) => acc + curr.fail_rate, 0);
-    return (total / strategicData.length).toFixed(1);
-  }
-
-  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
+  }, [selectedApp, startDate, endDate, activeSubTab]);
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 pb-20">
       {/* TAB NAVIGATION */}
       <div className="flex items-center gap-6 border-b border-slate-200 dark:border-slate-700 mb-2">
         <button onClick={() => setActiveSubTab('overview')} className={`pb-3 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${activeSubTab === 'overview' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
@@ -761,132 +722,156 @@ function DashboardView({ selectedApp }: any) {
       </div>
 
       {activeSubTab === 'overview' ? (
-        !data ? <div className="p-10 text-center text-slate-400 flex flex-col items-center gap-2"><RefreshCw className="animate-spin" /> Loading Overview...</div> : (
+        !data ? (
+           <div className="p-20 text-center text-slate-400 flex flex-col items-center gap-3">
+             <RefreshCw className="animate-spin text-blue-500" size={32} /> 
+             <span>Analyzing Game Data...</span>
+           </div>
+        ) : (
           <>
-            {/* [FIX] HEADER & FILTER BAR MỚI - ĐỒNG BỘ VỚI TAB KIA */}
+            {/* FILTER BAR */}
             <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex flex-wrap items-center gap-4">
-                {/* 1. LEVEL FILTER (STYLE: CLEAN DROPDOWN) */}
-                <div className="relative group">
-                  <div className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-600"><Filter size={18} /></div>
-                  <select
-                    value={selectedOverviewLevel}
-                    onChange={(e) => setSelectedOverviewLevel(e.target.value)}
-                    className="appearance-none bg-slate-50 border border-slate-200 text-slate-700 py-2 pl-10 pr-10 rounded-lg font-bold outline-none cursor-pointer min-w-[180px] hover:bg-slate-100 transition-colors"
-                  >
-                    {levels.map(lvl => (
-                      <option key={lvl} value={lvl}>
-                        {lvl === '0' ? '🏠 Lobby / Tutorial' : `Level ${lvl}`}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                </div>
+              <div className="flex items-center gap-2">
+                 <h3 className="font-bold text-slate-700 dark:text-slate-200 text-lg">
+                   {selectedApp.name} <span className="text-slate-400 font-normal text-sm">| Global Stats</span>
+                 </h3>
+              </div>
 
-                <div className="h-6 w-px bg-slate-200 hidden md:block"></div>
-
-                {/* 2. DATE FILTER (STYLE: TIME RANGE BOX - GIỐNG INSPECTOR) */}
-                <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-2 bg-slate-100 text-slate-600 px-3 py-2 rounded-lg border border-slate-200">
-                    <Calendar size={18} />
-                    <span className="font-bold text-sm">Time Range</span>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <div className="px-3 text-xs font-bold text-slate-500 uppercase flex items-center gap-1">
+                    <Calendar size={12} /> Time Range
                   </div>
                   <input
                     type="date"
-                    className="bg-white border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    className="bg-transparent border-0 text-sm focus:ring-0 text-slate-700 dark:text-slate-300"
                     value={startDate}
                     onChange={(e) => setStartDate(e.target.value)}
                   />
                   <span className="text-slate-400 font-bold">-</span>
                   <input
                     type="date"
-                    className="bg-white border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    className="bg-transparent border-0 text-sm focus:ring-0 text-slate-700 dark:text-slate-300"
                     value={endDate}
                     onChange={(e) => setEndDate(e.target.value)}
                   />
                   {(startDate || endDate) && (
-                    <button onClick={() => { setStartDate(''); setEndDate('') }} className="text-red-500 hover:bg-red-50 p-2 rounded-full transition-colors">✕</button>
+                    <button onClick={() => { setStartDate(''); setEndDate('') }} className="text-red-500 hover:bg-red-50 p-1.5 rounded-md transition-colors">
+                      <X size={14} />
+                    </button>
                   )}
                 </div>
+                
+                <button onClick={fetchDashboard} className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors">
+                   <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
+                </button>
               </div>
-
-              {loading && <span className="text-sm text-blue-500 font-medium animate-pulse flex items-center gap-2">Syncing...</span>}
             </div>
 
-            {/* KPI CARDS - LAYOUT 4 THẺ */}
+            {/* KPI CARDS */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-
-              {/* 1. IAP Revenue */}
+              {selectedApp.id === 2 ? (
+                <StatCard
+                  title="Avg Playtime"
+                  value={`${(data?.overview?.cards?.avg_time || 0).toLocaleString()}s`}
+                  subValue="Per Session"
+                  icon={Clock} 
+                  color="bg-purple-100 text-purple-600"
+                />
+              ) : (
+                <StatCard
+                  title="IAP Revenue"
+                  value={`${(data?.overview?.cards?.revenue || 0).toLocaleString()}`}
+                  subValue="Real Currency"
+                  icon={Banknote}
+                  color="bg-emerald-100 text-emerald-600"
+                />
+              )}
               <StatCard
-                title="IAP Revenue"
-                value={`${(data?.overview?.cards?.revenue || 0).toLocaleString()} currency`}
-                icon={Banknote}
-                color="bg-emerald-100 text-emerald-600"
-              />
-
-              {/* 2. Total Plays (Đã fix lỗi crash active_users) */}
-              <StatCard
-                title="Total Plays"
-                value={`${(data?.overview?.cards?.active_users || 0).toLocaleString()} sessions`}
+                title="Total Sessions"
+                value={`${(data?.overview?.cards?.active_users || 0).toLocaleString()}`}
+                subValue="Plays"
                 icon={Users}
                 color="bg-blue-100 text-blue-600"
               />
-
-              {/* 3. COIN SINK (Tiền ảo) */}
               <StatCard
-                title="Coins Spent" // Đổi tên: Tiêu Coin
-                value={`${(data?.overview?.cards?.total_spent || 0).toLocaleString()} coin`}
-                icon={Coins} // Icon tiền xu vàng
-                color="bg-amber-100 text-amber-600" // Màu vàng cho Coin
+                title="Virtual Economy"
+                value={`${(data?.overview?.cards?.total_spent || 0).toLocaleString()}`}
+                subValue="Coins Sunk"
+                icon={Coins}
+                color="bg-amber-100 text-amber-600"
               />
-
-              {/* 4. Avg Fail Rate (Ưu tiên lấy từ Backend cho chính xác) */}
               <StatCard
                 title="Avg Fail Rate"
-                value={`${data?.overview?.cards?.avg_fail_rate || 0} %`}
+                value={`${data?.overview?.cards?.avg_fail_rate || 0}%`}
+                subValue="Difficulty"
                 icon={Activity}
                 color="bg-red-100 text-red-600"
               />
-
             </div>
 
-            {/* CHARTS */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 shadow-sm">
+            {/* CHARTS SECTION */}
+            <div className="space-y-8">
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
                 <div className="flex justify-between items-center mb-6">
-                  <div><h4 className="font-bold text-lg text-slate-800 flex items-center gap-2"><Activity className="text-red-500" size={20} /> Game Balance</h4><p className="text-xs text-slate-500">Fail Rate vs Revenue Correlation</p></div>
-                  <div className="flex gap-3 text-[10px] font-bold uppercase"><div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-amber-400"></div> Revenue</div><div className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-red-500"></div> Fail Rate</div></div>
+                  <div>
+                    <h4 className="font-bold text-lg text-slate-800 dark:text-slate-200 flex items-center gap-2">
+                      <Activity className="text-red-500" size={20} /> Game Balance Map
+                    </h4>
+                    <p className="text-xs text-slate-500">Correlation between Difficulty (Fail Rate) & Monetization (Revenue) across all levels.</p>
+                  </div>
+                  <div className="flex gap-4 text-xs font-bold uppercase">
+                      <div className="flex items-center gap-1 text-amber-500"><div className="w-3 h-1 bg-amber-400 rounded-full"></div> Revenue</div>
+                      <div className="flex items-center gap-1 text-red-500"><div className="w-3 h-1 bg-red-500 rounded-full"></div> Fail Rate</div>
+                  </div>
                 </div>
-                <div className="h-[350px] w-full">
+
+                <div className="h-[400px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart data={strategicData}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                      <XAxis dataKey="name" tick={{ fontSize: 10 }} height={50} angle={-30} textAnchor="end" />
-                      <YAxis yAxisId="left" orientation="left" stroke="#d97706" tick={{ fontSize: 10 }} tickFormatter={(val) => val >= 1000 ? `${val / 1000}k` : val} />
+                    <ComposedChart data={data.overview.balance_chart} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                      <XAxis 
+                        dataKey="name" 
+                        tick={{ fontSize: 10 }} 
+                        height={50} 
+                        angle={-45} 
+                        textAnchor="end" 
+                        interval="preserveStartEnd" 
+                      />
+                      <YAxis yAxisId="left" orientation="left" stroke="#d97706" tick={{ fontSize: 10 }} />
                       <YAxis yAxisId="right" orientation="right" stroke="#ef4444" domain={[0, 100]} tick={{ fontSize: 10 }} unit="%" />
-                      <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
-                      <Bar yAxisId="left" dataKey="revenue" fill="#fbbf24" barSize={12} radius={[4, 4, 0, 0]} name="Revenue" />
-                      <Line yAxisId="right" type="monotone" dataKey="fail_rate" stroke="#ef4444" strokeWidth={2} dot={{ r: 2 }} name="Fail Rate" />
+                      
+                      <RechartsTooltip 
+                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                        labelStyle={{ fontWeight: 'bold', color: '#64748b' }}
+                      />
+                      
+                      <Bar yAxisId="left" dataKey="revenue" fill="#fbbf24" barSize={20} radius={[4, 4, 0, 0]} name="Revenue" />
+                      <Line yAxisId="right" type="monotone" dataKey="fail_rate" stroke="#ef4444" strokeWidth={2} dot={false} activeDot={{ r: 6 }} name="Fail Rate (%)" />
                     </ComposedChart>
                   </ResponsiveContainer>
                 </div>
               </div>
 
-              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 shadow-sm">
-                <h4 className="font-bold text-slate-700 mb-2 flex items-center gap-2"><BarChart3 className="text-blue-500" size={18} /> Full Event Distribution</h4>
-                <p className="text-xs text-slate-500 mb-4">Frequency of all recorded events</p>
-                <div className="h-[350px]">
+              <div className="bg-white dark:bg-slate-800 p-6 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
+                <h4 className="font-bold text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-2">
+                  <BarChart3 className="text-blue-500" size={18} /> Full Event Contribution
+                </h4>
+                <p className="text-xs text-slate-500 mb-6">Top high-frequency events recorded by the system.</p>
+                
+                <div className="h-[400px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={data.overview.chart_main} layout="vertical" margin={{ left: 20 }}>
-                      <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                    <BarChart data={data.overview.chart_main} layout="vertical" margin={{ left: 40, right: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
                       <XAxis type="number" tick={{ fontSize: 10 }} />
-                      <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 10 }} interval={0} />
-                      <RechartsTooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '8px' }} />
-                      <Bar dataKey="value" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={12} name="Count" />
+                      <YAxis dataKey="name" type="category" width={150} tick={{ fontSize: 11, fontWeight: 500 }} />
+                      <RechartsTooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: '8px' }} />
+                      <Bar dataKey="value" fill="#3b82f6" radius={[0, 4, 4, 0]} barSize={16} name="Event Count" />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               </div>
+
             </div>
           </>
         )
@@ -897,11 +882,39 @@ function DashboardView({ selectedApp }: any) {
   );
 }
 
-function MonitorView({ selectedApp }: any) {
+// --- VIEW: MONITOR (UPDATED WITH MANUAL JOB MODAL) ---
+function MonitorView({ selectedApp, apps }: any) {
   const [history, setHistory] = useState<any[]>([]);
   const [selectedJob, setSelectedJob] = useState<any>(null);
   const [filterStartDate, setFilterStartDate] = useState('');
   const [filterEndDate, setFilterEndDate] = useState('');
+
+  // --- STATE CHO MANUAL JOB MODAL ---
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualConfig, setManualConfig] = useState({
+    appId: '',
+    startTime: '',
+    endTime: '' ,
+    executionTime: ''
+  });
+
+  // Helper init time (Mặc định chọn khoảng 1 tiếng vừa qua)
+  const initManualTime = () => {
+    const now = new Date();
+    // End time = Hiện tại
+    const end = new Date(now.getTime() - (now.getTimezoneOffset() * 60000));
+    
+    // Start time = Hiện tại - 1 tiếng
+    const start = new Date(now.getTime() - (60 * 60 * 1000) - (now.getTimezoneOffset() * 60000));
+
+    setManualConfig(prev => ({
+        ...prev,
+        appId: selectedApp ? selectedApp.id.toString() : (apps && apps.length > 0 ? apps[0].id.toString() : ''),
+        startTime: start.toISOString().slice(0, 16),
+        endTime: end.toISOString().slice(0, 16),
+        executionTime: ''
+    }));
+  };
 
   // State phân trang
   const [pagination, setPagination] = useState({
@@ -974,7 +987,14 @@ function MonitorView({ selectedApp }: any) {
     }
   };
 
+  // [UPDATED] Xử lý nút Run (Manual hoặc Demo)
   const handleRun = async (type: string, retryJobId?: number) => {
+    if (type === 'manual') {
+        initManualTime();
+        setShowManualModal(true);
+        return;
+    }
+
     if (!selectedApp) return;
     const body: any = { run_type: type };
     if (retryJobId) body.retry_job_id = retryJobId;
@@ -985,6 +1005,40 @@ function MonitorView({ selectedApp }: any) {
       });
       fetchHistory(pagination.current_page);
     } catch (e) { alert("Error trigger job"); }
+  };
+
+  // [NEW] Submit Manual Job
+  const submitManualJob = async () => {
+    if (!manualConfig.startTime || !manualConfig.endTime) {
+      alert("Vui lòng chọn đầy đủ thời gian Bắt đầu và Kết thúc!");
+      return;
+    }
+  
+    try {
+      const response = await fetch(`${API_URL}/api/create_manual_job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app_id: manualConfig.appId,
+          start_time: manualConfig.startTime,
+          end_time: manualConfig.endTime,
+          execution_time: manualConfig.executionTime || null
+        }),
+      });
+  
+      const data = await response.json();
+      
+      if (response.ok) {
+        alert(`✅ ${data.message}`);
+        setShowManualModal(false);
+        fetchHistory(1); // Reload bảng
+      } else {
+        alert(`❌ Error: ${data.error}`);
+      }
+    } catch (error) {
+      console.error("Manual Job Error:", error);
+      alert("❌ Server connection error");
+    }
   };
 
   const handleStop = async (jobId: number) => {
@@ -1004,6 +1058,10 @@ function MonitorView({ selectedApp }: any) {
     if (!confirm(`Delete record #${jobId}?`)) return;
     await fetch(`${API_URL}/monitor/history/${jobId}`, { method: 'DELETE' });
     fetchHistory(pagination.current_page);
+  };
+
+  const handleDownloadRaw = (jobId: number) => {
+      window.open(`${API_URL}/monitor/export/${jobId}`, '_blank');
   };
 
   const isRunningState = (status: string) => ['Running', 'Processing'].includes(status);
@@ -1045,11 +1103,45 @@ function MonitorView({ selectedApp }: any) {
     return <span className={`px-2 py-1 rounded-md text-xs font-bold uppercase tracking-wider ${colorClass}`}>{type}</span>;
   };
 
+  const formatDataRange = (since: string, until: string) => {
+    if (!since || !until) return <span className="text-slate-300 italic">-</span>;
+
+    try {
+      const s = new Date(since);
+      const u = new Date(until);
+
+      // Tạo giờ VN bằng cách cộng thủ công 7 tiếng
+      const sVN = new Date(s.getTime() + 7 * 60 * 60 * 1000);
+      const uVN = new Date(u.getTime() + 7 * 60 * 60 * 1000);
+
+      // 1. Lấy Ngày (YYYY-MM-DD)
+      const dateStr = sVN.toISOString().split('T')[0];
+
+      // 2. Lấy Giờ (HH:MM)
+      const vnTime = `${sVN.toISOString().slice(11, 16)} - ${uVN.toISOString().slice(11, 16)}`;
+      const utcTime = `${s.toISOString().slice(11, 16)} - ${u.toISOString().slice(11, 16)}`;
+
+      return (
+        <div className="flex flex-col gap-0.5 text-[11px]">
+          <div className="font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1">
+              📅 {dateStr}
+          </div>
+          <div className="text-slate-600 dark:text-slate-300">
+             <span className="font-bold text-indigo-600 dark:text-indigo-400">🕒 VN[{vnTime}]</span>
+             <span className="text-slate-400 ml-1 text-[10px]">(UTC: {utcTime})</span>
+          </div>
+        </div>
+      );
+    } catch (e) {
+      return "-";
+    }
+  };
+
   return (
     <div className="space-y-6 relative">
       <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div className="flex flex-col sm:flex-row sm:items-center gap-4 w-full md:w-auto">
-          <h3 className="font-bold text-lg whitespace-nowrap">Job History Monitor</h3>
+          <h3 className="font-bold text-lg whitespace-nowrap">Monitor Table</h3>
           <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-900 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700">
             <Filter size={16} className="text-slate-400" />
             <input type="date" className="text-sm bg-transparent border-none outline-none text-slate-600 dark:text-slate-300 focus:ring-0 w-32" value={filterStartDate} onChange={(e) => setFilterStartDate(e.target.value)} />
@@ -1060,7 +1152,7 @@ function MonitorView({ selectedApp }: any) {
         </div>
         <div className="flex gap-2 w-full md:w-auto justify-end">
           <button onClick={() => handleRun('demo')} className="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm whitespace-nowrap"><Play size={16} /> Test Demo</button>
-          <button onClick={() => handleRun('manual')} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm whitespace-nowrap"><RotateCcw size={16} /> Run ETL Now</button>
+          <button onClick={() => handleRun('manual')} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm whitespace-nowrap"><RotateCcw size={16} /> Create Manual Job</button>
           <button onClick={handleDeleteAll} className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 text-sm whitespace-nowrap"><Trash2 size={16} /> Delete All</button>
         </div>
       </div>
@@ -1072,6 +1164,7 @@ function MonitorView({ selectedApp }: any) {
               <tr>
                 <th className="px-6 py-3">ID</th>
                 <th className="px-6 py-3">Type</th>
+                <th className="px-6 py-3 min-w-[220px]">Data Range</th>
                 <th className="px-6 py-3">Start Time</th>
                 <th className="px-6 py-3">End Time</th>
                 <th className="px-6 py-3">Duration</th>
@@ -1081,14 +1174,31 @@ function MonitorView({ selectedApp }: any) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-              {/* [FIX 2] Đổi History (viết hoa) thành history (viết thường) */}
               {history.length === 0 ? (
-                <tr><td colSpan={8} className="p-10 text-center text-slate-400">No history available.</td></tr>
+                <tr><td colSpan={9} className="p-10 text-center text-slate-400">No history available.</td></tr>
               ) : history.map((job: any) => (
                 <tr key={job.id} className="hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
                   <td className="px-6 py-3 font-mono text-slate-500">#{job.id}</td>
                   <td className="px-6 py-3">{getRunTypeBadge(job.run_type)}</td>
-                  <td className="px-6 py-3 font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">{formatRawTime(job.start_time)}</td>
+                  
+                  <td className="px-6 py-3 border-b border-slate-50 dark:border-slate-800">
+                    {formatDataRange(job.date_since, job.date_until)}
+                  </td>
+
+                  <td className="px-6 py-3 font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                    {job.start_time ? (
+                      // TH1: Đã chạy -> Hiện giờ chạy thực tế (Màu bình thường)
+                      formatRawTime(job.start_time)
+                    ) : job.scheduled_at ? (
+                      // TH2: Chưa chạy nhưng có hẹn giờ -> Hiện giờ hẹn (Màu cam + Icon Clock)
+                      <span className="flex items-center gap-1 text-amber-600 font-bold bg-amber-50 dark:bg-amber-900/30 px-2 py-0.5 rounded border border-amber-200 dark:border-amber-800" title="Scheduled Execution Time">
+                        <Clock size={14} /> {formatRawTime(job.scheduled_at)}
+                      </span>
+                    ) : (
+                      // TH3: Không có cả 2 -> Hiện dấu gạch ngang
+                      <span className="text-slate-400 italic text-xs">Pending...</span>
+                    )}
+                  </td>
                   <td className="px-6 py-3 font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">
                     {job.end_time ? formatRawTime(job.end_time) : <span className="text-blue-500 italic">Running...</span>}
                   </td>
@@ -1104,6 +1214,22 @@ function MonitorView({ selectedApp }: any) {
                           <StopCircle size={16} className="animate-pulse" /> STOP
                         </button>
                       )}
+                      
+                      {job.date_since && (
+                        <button 
+                          onClick={() => job.date_since && handleDownloadRaw(job.id)} 
+                          disabled={!job.date_since}
+                          className={`p-2 rounded-lg flex items-center gap-1 transition-all border border-transparent 
+                              ${job.date_since 
+                                  ? 'text-purple-600 hover:bg-purple-50 hover:border-purple-200 cursor-pointer' 
+                                  : 'text-slate-300 cursor-not-allowed'
+                              }`} 
+                          title={job.date_since ? "Download Raw JSON" : "No raw data available (Legacy Job)"}
+                      >
+                          <Download size={16} />
+                      </button>
+                      )}
+
                       {['Failed', 'Cancelled', 'Success', 'Skipped'].includes(job.status) && (
                         <button onClick={() => handleRun('retry', job.id)} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg flex items-center gap-1 transition-all border border-transparent hover:border-blue-200" title="Retry">
                           <RotateCcw size={16} /> {job.status === 'Cancelled' ? 'Resume' : 'Retry'}
@@ -1123,7 +1249,7 @@ function MonitorView({ selectedApp }: any) {
           <div className="flex items-center gap-4 text-xs text-slate-500">
             <span>Showing <b>{history.length}</b> jobs</span>
             <span className="hidden sm:inline">|</span>
-            <span>Total: <b>{pagination.total_records.toLocaleString()}</b> jobs</span>
+            <span>Total: <b>{(pagination?.total_records || 0).toLocaleString()}</b> jobs</span>
           </div>
 
           <div className="flex items-center gap-1 bg-white dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
@@ -1164,7 +1290,6 @@ function MonitorView({ selectedApp }: any) {
         </div>
       </div>
 
-      {/* [FIX 3] Đặt Modal vào TRONG thẻ div cha, không để rơi ra ngoài */}
       {selectedJob && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white dark:bg-slate-800 w-full max-w-4xl rounded-xl shadow-2xl flex flex-col max-h-[90vh] animate-in zoom-in-95">
@@ -1181,6 +1306,112 @@ function MonitorView({ selectedApp }: any) {
           </div>
         </div>
       )}
+
+      {/* --- MANUAL JOB MODAL (New) --- */}
+      {showManualModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-700 animate-in fade-in zoom-in duration-200">
+            
+            {/* Header */}
+            <div className="bg-slate-50 dark:bg-slate-900 px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center">
+                <h3 className="font-bold text-lg text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                <RotateCcw size={18} className="text-emerald-600" /> 
+                Create Manual Job
+                </h3>
+                <button onClick={() => setShowManualModal(false)} className="text-slate-400 hover:text-red-500 transition-colors">
+                <X size={20} />
+                </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4">
+                
+                {/* Chọn App */}
+                <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Select Game</label>
+                <select 
+                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                    value={manualConfig.appId}
+                    onChange={(e) => setManualConfig({...manualConfig, appId: e.target.value})}
+                >
+                    {apps.map((app: any) => (
+                        <option key={app.id} value={app.id}>{app.name} (ID: {app.id})</option>
+                    ))}
+                </select>
+                </div>
+
+                {/* Grid 2 cột cho thời gian */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Chọn thời gian bắt đầu */}
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Từ (Start Time)</label>
+                        <input 
+                            type="datetime-local" 
+                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                            value={manualConfig.startTime}
+                            onChange={(e) => setManualConfig({...manualConfig, startTime: e.target.value})}
+                        />
+                    </div>
+
+                    {/* Chọn thời gian kết thúc */}
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Đến (End Time)</label>
+                        <input 
+                            type="datetime-local" 
+                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                            value={manualConfig.endTime}
+                            onChange={(e) => setManualConfig({...manualConfig, endTime: e.target.value})}
+                        />
+                    </div>
+                </div>
+                    
+                    {/* --- PHẦN MỚI: HẸN GIỜ CHẠY --- */}
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-700">
+                    <label className="block text-sm font-bold text-slate-700 dark:text-slate-200 mb-1 flex items-center gap-2">
+                        <Clock size={14} /> Hẹn giờ chạy (Optional)
+                    </label>
+                    <div className="flex">
+                        <input 
+                            type="datetime-local" 
+                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-emerald-500 text-sm transition-all"
+                            value={manualConfig.executionTime}
+                            onChange={(e) => setManualConfig({...manualConfig, executionTime: e.target.value})}
+                        />
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">
+                        {manualConfig.executionTime 
+                            ? "Job sẽ nằm chờ (Pending) và bắt đầu chạy vào giờ này." 
+                            : "Để trống để chạy ngay lập tức (ASAP)."}
+                    </p>
+                </div>
+
+                <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg flex items-start gap-2">
+                    <AlertCircle size={16} className="text-blue-600 mt-0.5 flex-shrink-0" />
+                    <p className="text-xs text-blue-700 dark:text-blue-300">
+                        Hệ thống sẽ quét chính xác dữ liệu trong khoảng thời gian này. Dùng để chạy lại (Re-run) các khung giờ bị thiếu hoặc lỗi.
+                    </p>
+                </div>
+            </div>
+
+            {/* Footer */}
+            <div className="bg-slate-50 dark:bg-slate-900 px-6 py-4 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-3">
+                <button 
+                onClick={() => setShowManualModal(false)}
+                className="px-4 py-2 rounded-lg text-slate-600 hover:bg-slate-200 dark:hover:bg-slate-800 font-medium transition-colors text-sm"
+                >
+                Cancel
+                </button>
+                <button 
+                onClick={submitManualJob}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-bold shadow-lg shadow-emerald-500/30 transition-all flex items-center gap-2 text-sm"
+                >
+                <Play size={16} fill="currentColor" /> Create Job
+                </button>
+            </div>
+
+            </div>
+        </div>
+        )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Tag, Copy, RefreshCw, ListFilter } from 'lucide-react';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
 // --- SUB-COMPONENT: EVENT DICTIONARY ---
 export function EventDictionary({ appId }: { appId: number }) {
   const [data, setData] = useState<any>(null);
@@ -9,7 +10,7 @@ export function EventDictionary({ appId }: { appId: number }) {
   const fetchEvents = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`http://127.0.0.1:8080/api/events/dictionary/${appId}`);
+      const res = await fetch(`${API_URL}/api/events/dictionary/${appId}`);
       const json = await res.json();
       if (json.success) setData(json);
     } catch (e) {
