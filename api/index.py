@@ -59,8 +59,19 @@ def unlock_app(app_id):
 
 # Giữ hàm này để tương thích code cũ, nhưng logic trả về False luôn để không chặn global
 def is_system_busy(): return False
-
 def set_system_busy(busy, app_id=None, run_type=None): pass
+
+def parse_date_param(date_str):
+    """
+    Chuyển đổi ngày từ Frontend (DD/MM/YYYY) sang chuẩn DB (YYYY-MM-DD)
+    """
+    if not date_str: return None
+    try:
+        # Thử format DD/MM/YYYY (Frontend gửi lên)
+        return datetime.strptime(date_str, "%d/%m/%Y").strftime("%Y-%m-%d")
+    except:
+        # Nếu lỗi, trả về nguyên gốc (có thể nó đã là YYYY-MM-DD)
+        return date_str
 
 def universal_flatten(raw_input):
     if not raw_input: return {}
@@ -905,122 +916,115 @@ def get_dashboard(app_id):
     conn = get_db()
     if not conn: return jsonify({"success": False, "error": "DB Connection failed"}), 500
     
-    start_date = request.args.get('start_date')
-    end_date = request.args.get('end_date')
+    # [FIX] Dùng hàm parse ngày để DB hiểu
+    start_date = parse_date_param(request.args.get('start_date'))
+    end_date = parse_date_param(request.args.get('end_date'))
 
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        # 1. KHỞI TẠO BIẾN AN TOÀN (FIX LỖI 'variable not defined')
-        booster_config_list = [] 
-        real_events = ["iapSuccess", "firstIAP", "iapPurchase"]
-        start_events = ["missionStart", "missionStart_Daily", "level_start", "level_loading_start", "level_first_start"]
-        fail_events = ["missionFail", "missionFail_Daily", "level_fail", "level_lose"]
         
-        try:
-            config = get_app_config(cur, app_id)
-            if config:
-                # Cập nhật nếu config có dữ liệu
-                c_booster = config.get('boosters')
-                if isinstance(c_booster, list): booster_config_list = c_booster
-                
-                c_real = config.get('events', {}).get('transaction', {}).get('real_currency')
-                if c_real: real_events = c_real
-        except: pass
+        # 1. DANH SÁCH SỰ KIỆN
+        iap_events = ["iapSuccess", "firstIAP", "iapPurchase", "purchase_verified", "iapOfferGet"]
+        start_events = ["missionStart", "missionStart_Daily", "level_start", "level_loading_start", "level_first_start", "missionStart_WeeklyQuestTutor"]
+        fail_events = ["missionFail", "missionFail_Daily", "level_fail", "level_lose", "missionFail_WeeklyQuestTutor"]
 
-        # Lấy danh sách key booster
-        booster_keys = [b['key'] for b in booster_config_list if isinstance(b, dict) and 'key' in b]
-        if not booster_keys:
-            booster_keys = ["booster_Hammer", "booster_Magnet", "booster_Add", "booster_Unlock", "booster_Clear", "revive_boosterClear", "booster_bubble", "booster_shuffle", "booster_ufo"]
+        try:
+            cfg = get_app_config(cur, app_id)
+            if cfg:
+                c_real = cfg.get('events', {}).get('transaction', {}).get('real_currency')
+                if c_real: iap_events.extend(c_real)
+        except: pass
+        iap_events = list(set(iap_events))
 
         # 2. FILTER TIME
-        where_clause = "WHERE app_id = %s"
-        params = [app_id]
-        if start_date: 
-            where_clause += " AND created_at >= %s"
-            params.append(start_date + " 00:00:00")
-        if end_date: 
-            where_clause += " AND created_at <= %s"
-            params.append(end_date + " 23:59:59")
+        where = "WHERE app_id = %s"; params = [app_id]
+        if start_date: where += " AND created_at >= %s"; params.append(start_date + " 00:00:00")
+        if end_date: where += " AND created_at <= %s"; params.append(end_date + " 23:59:59")
 
-        # 3. DOANH THU (Regex Extract)
-        cur.execute(r"""
-            SELECT COALESCE(SUM(
-                COALESCE(SUBSTRING(event_json FROM '"coin_spent"\s*:\s*"?(\d+)"?')::numeric, 0)
-            ), 0)::int as real_revenue
-            FROM event_logs
-            """ + where_clause + r""" 
-            AND event_name = ANY(%s) 
-        """, tuple(params + [real_events]))
-        real_revenue = cur.fetchone()['real_revenue']
+        # 3. KÉO DỮ LIỆU VỀ TÍNH TOÁN
+        cur.execute(f"SELECT event_name, event_json FROM event_logs {where}", tuple(params))
+        rows = cur.fetchall()
 
-        # 4. TỔNG TIÊU COIN (Regex Extract)
-        cur.execute(r"""
-            SELECT SUM(
-                 COALESCE(SUBSTRING(event_json FROM '"coin_spent"\s*:\s*"?(\d+)"?')::int, 0)
-            )::int as virtual_sink
-            FROM event_logs
-            """ + where_clause + r"""
-            AND NOT (event_name = ANY(%s))
-        """, tuple(params + [real_events]))
-        virtual_sink = cur.fetchone()['virtual_sink'] or 0
+        # 4. TÍNH TOÁN PYTHON
+        real_revenue = 0.0
+        virtual_sink = 0
+        total_plays = 0
+        fail_count = 0
+        event_dist = {}
+        booster_map = {}
 
-        # 5. TOTAL PLAYS
-        cur.execute(f"SELECT COUNT(*)::int as count FROM event_logs {where_clause} AND event_name = ANY(%s)", tuple(params + [start_events]))
-        total_plays = cur.fetchone()['count'] or 0
-
-        # 6. FAIL RATE
-        cur.execute(f"SELECT COUNT(*)::int as count FROM event_logs {where_clause} AND event_name = ANY(%s)", tuple(params + [fail_events]))
-        real_fail_count = cur.fetchone()['count'] or 0
-        fail_rate = round((real_fail_count / total_plays) * 100, 1) if total_plays > 0 else 0.0
-
-        # 7. CHART MAIN
-        cur.execute(f"SELECT event_name as name, COUNT(*)::int as value FROM event_logs {where_clause} GROUP BY event_name ORDER BY value DESC", tuple(params))
-        chart_data = cur.fetchall()
-
-        # 8. BOOSTER REVENUE (Manual Count bằng SQL)
-        # Vì Regex trong Group By phức tạp, ta lấy raw về xử lý một chút hoặc dùng count đơn giản
-        booster_stats = []
-        if booster_keys:
-            # Map giá
-            PRICE_MAP = {}
-            NAME_MAP = {}
-            for b in booster_config_list:
-                if isinstance(b, dict):
-                    k = b.get('key')
-                    PRICE_MAP[k] = b.get('price', 100)
-                    NAME_MAP[k] = b.get('name', k)
-
-            # Query đếm số lần xuất hiện của key trong chuỗi JSON
-            # Lưu ý: Cách này đếm số dòng có chứa key đó
-            for key in booster_keys:
-                # Regex tìm "key": so_luong (số lượng > 0)
-                # Ví dụ: "booster_Hammer": 1
-                cur.execute(r"""
-                    SELECT COUNT(*) as cnt 
-                    FROM event_logs 
-                    """ + where_clause + r""" 
-                    AND event_json ~ (%s || '\s*:\s*[1-9]')
-                """, tuple(params + [key]))
+        # [HELPER] Hàm làm sạch tiền tệ (Local function)
+        def clean_money(val):
+            if not val: return 0.0
+            if isinstance(val, (int, float)): return float(val)
+            try:
+                # 1. Chuyển thành string
+                s = str(val)
+                # 2. Bỏ ký tự lạ (chữ cái, ký hiệu tiền tệ) chỉ giữ lại số, dấu chấm, dấu phẩy, dấu trừ
+                # Ví dụ: "99,99 Kč" -> "99,99"
+                s_clean = re.sub(r'[^\d.,-]', '', s)
                 
-                count = cur.fetchone()['cnt']
-                if count > 0:
-                    price = PRICE_MAP.get(key, 100)
-                    name = NAME_MAP.get(key, key)
-                    booster_stats.append({
-                        "name": name,
-                        "value": count,
-                        "revenue": count * price,
-                        "price": price
-                    })
+                # 3. Xử lý dấu phẩy (Châu Âu/VN dùng phẩy làm thập phân)
+                # Nếu có phẩy mà không có chấm, hoặc phẩy xuất hiện sau cùng -> Thay phẩy bằng chấm
+                if ',' in s_clean and '.' not in s_clean:
+                    s_clean = s_clean.replace(',', '.')
+                elif ',' in s_clean and '.' in s_clean:
+                    # Trường hợp 1,000.00 -> Bỏ phẩy
+                    s_clean = s_clean.replace(',', '')
+                
+                # 4. Parse Float
+                return float(s_clean)
+            except:
+                return 0.0
+
+        for r in rows:
+            evt = r['event_name']
+            event_dist[evt] = event_dist.get(evt, 0) + 1
+
+            if evt in start_events: total_plays += 1
+            if evt in fail_events: fail_count += 1
+
+            # KHOAN SÂU JSON
+            data = universal_flatten(r['event_json'])
+
+            # Tính Doanh Thu Thật (USD/VND/Kč...)
+            if evt in iap_events:
+                # Lấy giá trị thô bất kể định dạng
+                raw_val = data.get('price') or data.get('revenue') or data.get('amount') or 0
+                # "Rửa tiền" qua hàm clean_money
+                real_revenue += clean_money(raw_val)
             
-            booster_stats.sort(key=lambda x: x['revenue'], reverse=True)
+            # Tính Tiêu Coin
+            if evt not in iap_events:
+                coin = int(data.get('coin_spent') or data.get('cost') or data.get('priceSpendLevel') or 0)
+                virtual_sink += coin
+
+            # Map Booster
+            for k, v in data.items():
+                if ('booster' in k or 'revive' in k) and str(v).isdigit() and int(v) > 0:
+                    clean = k.replace('booster_', '').replace('revive_', '')
+                    booster_map[clean] = booster_map.get(clean, 0) + int(v)
+
+        # 5. FINAL OUTPUT
+        fail_rate = round((fail_count / total_plays) * 100, 1) if total_plays > 0 else 0.0
+
+        chart_data = [{"name": k, "value": v} for k, v in event_dist.items()]
+        chart_data.sort(key=lambda x: x['value'], reverse=True)
+        chart_data = chart_data[:20]
+
+        PRICE_MAP = {"Hammer": 120, "Magnet": 80, "Add": 60, "Unlock": 190, "Clear": 120}
+        booster_stats = []
+        for k, v in booster_map.items():
+            nm = k.capitalize()
+            pr = PRICE_MAP.get(k, 100)
+            booster_stats.append({"name": nm, "value": v, "revenue": v*pr, "price": pr})
+        booster_stats.sort(key=lambda x: x['revenue'], reverse=True)
 
         return jsonify({
             "success": True,
             "overview": {
                 "cards": {
-                    "revenue": real_revenue,      
+                    "revenue": round(real_revenue, 2),
                     "active_users": total_plays,
                     "avg_fail_rate": fail_rate,
                     "total_spent": virtual_sink  
@@ -1031,8 +1035,9 @@ def get_dashboard(app_id):
         })
 
     except Exception as e:
-        print(f"Error dashboard V93: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        print(f"Error dashboard: {e}")
+        # Trả về 0 thay vì lỗi 500 để UI không bị trắng trang
+        return jsonify({"success": True, "overview": {"cards": {"revenue":0,"active_users":0,"avg_fail_rate":0,"total_spent":0}, "chart_main":[], "booster_chart":[]}})
     finally: conn.close()
 
 @app.route("/api/levels/<int:app_id>", methods=['GET'])
@@ -1041,211 +1046,207 @@ def get_levels(app_id):
     if not conn: return jsonify([])
     try:
         cur = conn.cursor()
-        # Lấy TOÀN BỘ dữ liệu để lọc chính xác (Không dùng LIMIT)
+        # Chỉ lấy cột JSON để tối ưu
         cur.execute("SELECT event_json FROM event_logs WHERE app_id = %s", (app_id,))
         rows = cur.fetchall()
         
         levels = set()
+        import re
+
         for r in rows:
-            # Dùng mũi khoan vạn năng V95
-            data = universal_flatten(r[0])
+            json_str = r[0]
+            data = universal_flatten(json_str)
             
-            # Tìm Level ID ở mọi key có thể (Game 1 & 2)
-            lvl = data.get('levelID') or data.get('level_display') or data.get('missionID')
+            # [LOGIC V116: TÌM ỨNG VIÊN LỚN NHẤT]
+            candidates = []
             
-            if lvl is not None:
-                # Lọc lấy số
-                digits = ''.join(filter(str.isdigit, str(lvl)))
-                if digits:
-                    l = int(digits)
-                    if l <= 2000: levels.add(l)
+            # 1. Quét qua các key tiềm năng
+            keys_to_check = ['levelID', 'level_display', 'missionID', 'dayChallenge']
+            for k in keys_to_check:
+                val = data.get(k)
+                if val and str(val).isdigit():
+                    candidates.append(int(val))
+            
+            # 2. Regex Fallback
+            if not candidates:
+                match = re.search(r'(?:levelID|level_display|missionID)[^0-9]{1,10}(\d+)', json_str)
+                if match:
+                    candidates.append(int(match.group(1)))
+            
+            # 3. Chọn Level chuẩn
+            if candidates:
+                max_lvl = max(candidates)
+                if 0 < max_lvl <= 5000: # Giới hạn 5000 để lọc rác
+                    levels.add(max_lvl)
         
+        # Sort số -> string
         sorted_levels = sorted(list(levels))
         return jsonify([str(l) for l in sorted_levels])
+
     except Exception as e:
-        print(f"Error get_levels V95: {e}")
+        print(f"Error get_levels: {e}")
         return jsonify([])
     finally: conn.close()
 
 @app.route("/dashboard/<int:app_id>/level-detail", methods=['GET'])
 def get_level_detail(app_id):
-    level_id = request.args.get('level_id')
-    start_date = request.args.get('start_date')
-    end_date = request.args.get('end_date')
-    
-    # Default return để chống crash
-    default_resp = {
+    safe_response = {
         "success": True, 
         "metrics": {"total_plays":0, "win_rate":0, "arpu":0, "avg_balance":0, "top_item":"None"},
         "funnel": [], "booster_usage": [], "cost_distribution": [],
         "logs": {"data": [], "pagination": {"current": 1, "total_pages": 0, "total_records": 0}}
     }
 
-    try: page = int(request.args.get('page', 1)); limit = int(request.args.get('limit', 50))
-    except: page=1; limit=50
-    offset = (page - 1) * limit
-
-    conn = get_db()
-    if not conn: return jsonify(default_resp), 500
-    
     try:
+        level_id = request.args.get('level_id') # Ví dụ: "201"
+        start_date = parse_date_param(request.args.get('start_date'))
+        end_date = parse_date_param(request.args.get('end_date'))
+        
+        try: page = int(request.args.get('page', 1)); limit = int(request.args.get('limit', 50))
+        except: page=1; limit=50
+        offset = (page - 1) * limit
+
+        conn = get_db()
+        if not conn: return jsonify(safe_response), 500
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # 1. SETUP CONFIG & MAP GIÁ
-        # Hardcode danh sách Item của Game 1 để đảm bảo hiện tên đẹp
-        PRICE_MAP = {
-            "Hammer": 120, "Magnet": 80, "Add": 60, "Unlock": 190, "Clear": 120, "Revive": 190,
-            "booster_Hammer": 120, "booster_Magnet": 80, "booster_Add": 60, "booster_Unlock": 190
-        }
-        DISPLAY_MAP = {
-            "Hammer": "Hammer 🔨", "Magnet": "Magnet 🧲", "Add": "Add Moves ➕", 
-            "Unlock": "Unlock 🔓", "Clear": "Clear 🧹", "Revive": "Revive 💖"
-        }
-        
-        # Cố gắng lấy thêm từ DB nếu có
+        # 1. SETUP CONFIG (Giữ nguyên)
+        ALL_BOOSTERS = {} 
+        DEFAULTS = [("Hammer",120),("Magnet",80),("Add",60),("Unlock",190),("Clear",120),("Revive",190),("Shuffle",50),("Undo",50)]
+        for k, p in DEFAULTS: ALL_BOOSTERS[k] = {"name": k, "price": p}
         try:
             cfg = get_app_config(cur, app_id)
             if cfg and 'boosters' in cfg:
                 for b in cfg['boosters']:
                     if isinstance(b, dict):
-                        k = b.get('key',''); nm = b.get('name',''); pr = b.get('price', 100)
-                        cl = k.replace('booster_', '').replace('revive_', '')
-                        PRICE_MAP[cl] = pr; PRICE_MAP[k] = pr
-                        DISPLAY_MAP[cl] = nm; DISPLAY_MAP[k] = nm
+                        k = b.get('key','').replace('booster_','').replace('revive_','')
+                        ALL_BOOSTERS[k] = {"name": b.get('name', k), "price": b.get('price', 100)}
         except: pass
 
-        # 2. BỘ LỌC SQL "LỎNG" (LOOSE FILTER)
-        # Chỉ cần thấy key level và số level nằm trên cùng 1 dòng là lấy về.
-        # Python sẽ lọc chính xác sau. Cách này nhanh và không bao giờ sót.
-        where = "WHERE app_id = %s"
-        params = [app_id]
-        
-        # Regex: Tìm (levelID hoặc missionID...) theo sau là bất kỳ ký tự nào, rồi đến số Level
-        # Ví dụ bắt được: "levelID": 90, "levelID": "90", \"levelID\":90
-        level_regex = f'(levelID|level_display|missionID).*?{level_id}'
-        where += f" AND event_json ~ '{level_regex}'"
-
+        # 2. QUERY DỮ LIỆU (LẤY HẾT VỀ RỒI LỌC PYTHON)
+        # Vì lọc SQL Regex rất khó chính xác với logic "Max", ta lấy về Python xử lý cho chắc.
+        where = "WHERE app_id = %s"; params = [app_id]
         if start_date: where += " AND created_at >= %s"; params.append(start_date + " 00:00:00")
         if end_date: where += " AND created_at <= %s"; params.append(end_date + " 23:59:59")
 
-        # 3. LẤY DỮ LIỆU
         cur.execute(f"SELECT created_at, event_name, event_json FROM event_logs {where} ORDER BY created_at DESC", tuple(params))
         rows = cur.fetchall()
 
-        # 4. XỬ LÝ PYTHON (CHÍNH XÁC)
-        target_lvl = str(level_id)
-        filtered_rows = []
-        
+        # 3. XỬ LÝ PYTHON
+        filtered = []
         metrics = {"start":0, "win":0, "fail":0, "spend":0, "rev":0}
-        cost_dist = {"win_cost": 0, "fail_cost": 0}
-        b_counts = {}
+        cost_dist = {"win_cost": 0, "fail_cost": 0, "general_cost": 0}
+        booster_counts = {k: 0 for k in ALL_BOOSTERS}
+
+        start_set = {"missionStart", "missionStart_Daily", "level_start", "level_loading_start"}
+        win_set = {"missionComplete", "missionComplete_Daily", "level_win"}
+        fail_set = {"missionFail", "missionFail_Daily", "level_fail", "level_lose"}
         
-        # Danh sách Event của Game 1 & 2
-        start_set = {"missionStart", "missionStart_Daily", "level_start", "level_loading_start", "missionStart_WeeklyQuestTutor"}
-        win_set = {"missionComplete", "missionComplete_Daily", "level_win", "missionComplete_WeeklyQuestTutor"}
-        fail_set = {"missionFail", "missionFail_Daily", "level_fail", "level_lose", "missionFail_WeeklyQuestTutor"}
+        target_lvl_int = int(level_id) if level_id and level_id.isdigit() else None
+        
+        import re
 
         for r in rows:
-            # Dùng hàm universal_flatten (Đã có từ V95)
-            data = universal_flatten(r['event_json'])
+            json_str = r['event_json']
+            data = universal_flatten(json_str)
             
-            # Kiểm tra Level CHÍNH XÁC tại đây
-            # Lấy tất cả các trường có thể là level
-            l_val = str(data.get('levelID') or data.get('level_display') or data.get('missionID') or "")
-            
-            # So sánh string: "90" == "90"
-            if l_val != target_lvl: continue
-            
-            # Lưu lại
-            r_dict = dict(r); r_dict['parsed'] = data
-            filtered_rows.append(r_dict)
+            # [LOGIC V116: CHECK LEVEL CHÍNH XÁC]
+            if target_lvl_int is not None:
+                candidates = []
+                keys_to_check = ['levelID', 'level_display', 'missionID', 'dayChallenge']
+                for k in keys_to_check:
+                    val = data.get(k)
+                    if val and str(val).isdigit(): candidates.append(int(val))
+                
+                if not candidates:
+                    match = re.search(r'(?:levelID|level_display|missionID)[^0-9]{1,10}(\d+)', json_str)
+                    if match: candidates.append(int(match.group(1)))
+                
+                # Nếu không tìm thấy số nào -> Skip
+                if not candidates: continue
+                
+                # Nếu số lớn nhất KHÔNG KHỚP với level đang chọn -> Skip
+                if max(candidates) != target_lvl_int: continue
+
+            # Nếu khớp -> Xử lý tiếp
+            r['parsed'] = data
+            filtered.append(r)
             
             evt = r['event_name']
-            
-            # Tính Metrics
             if evt in start_set: metrics['start'] += 1
             elif evt in win_set: metrics['win'] += 1
             elif evt in fail_set: metrics['fail'] += 1
             
-            # Tính Tiền
-            money = int(data.get('coin_spent') or data.get('coin_cost') or 0)
+            money = int(data.get('coin_spent') or data.get('cost') or data.get('priceSpendLevel') or 0)
             if money > 0:
                 metrics['spend'] += 1
                 metrics['rev'] += money
                 if evt in win_set: cost_dist['win_cost'] += money
                 elif evt in fail_set: cost_dist['fail_cost'] += money
+                else: cost_dist['general_cost'] += money
 
-            # Tính Booster
             for k, v in data.items():
-                # Game 1 thường dùng key: booster_Hammer, revive_boosterClear
                 if ('booster' in k or 'revive' in k) and str(v).isdigit() and int(v) > 0:
                     clean = k.replace('booster_', '').replace('revive_', '')
-                    b_counts[clean] = b_counts.get(clean, 0) + int(v)
+                    booster_counts[clean] = booster_counts.get(clean, 0) + int(v)
+                    if clean not in ALL_BOOSTERS: ALL_BOOSTERS[clean] = {"name": clean, "price": 100}
 
-        # 5. TỔNG HỢP KẾT QUẢ
-        real_plays = metrics['win'] + metrics['fail']
-        if real_plays == 0: real_plays = metrics['start'] # Fallback nếu chưa có kết quả
-        
-        win_rate = round((metrics['win'] / real_plays)*100, 1) if real_plays > 0 else 0
-        
+        # 4. TỔNG HỢP OUTPUT (Giữ nguyên)
         b_list = []
-        for k, c in b_counts.items():
-            nm = DISPLAY_MAP.get(k, k.capitalize())
-            pr = PRICE_MAP.get(k, 100)
-            b_list.append({"item_name": nm, "usage_count": c, "revenue": c*pr, "price": pr, "type": "Used"})
-        b_list.sort(key=lambda x: x['revenue'], reverse=True)
-        
-        top_item = b_list[0]['item_name'] if b_list else "None"
-        arpu = sum(x['revenue'] for x in b_list)
+        for k, info in ALL_BOOSTERS.items():
+            cnt = booster_counts.get(k, 0)
+            b_list.append({"item_name": info['name'], "usage_count": cnt, "revenue": cnt * info['price'], "price": info['price'], "type": "Configured" if cnt == 0 else "Used"})
+        b_list.sort(key=lambda x: (x['usage_count'], x['revenue']), reverse=True)
 
-        final_metrics = { "total_plays": real_plays, "win_rate": win_rate, "arpu": arpu, "avg_balance": 0, "top_item": top_item }
-        
-        funnel = [
-            {"event_type": "START", "count": metrics['start'], "revenue": 0}, # Dùng metrics['start'] cho đúng phễu
-            {"event_type": "WIN", "count": metrics['win'], "revenue": 0},
-            {"event_type": "SPEND", "count": metrics['spend'], "revenue": metrics['rev']},
-            {"event_type": "FAIL", "count": metrics['fail'], "revenue": 0}
-        ]
-        
         cost_arr = []
-        if cost_dist['win_cost'] > 0: cost_arr.append({"name": "Cost to Win", "value": cost_dist['win_cost']})
-        if cost_dist['fail_cost'] > 0: cost_arr.append({"name": "Wasted on Fail", "value": cost_dist['fail_cost']})
+        if cost_dist['win_cost'] > 0: cost_arr.append({"name": "Win Cost", "value": cost_dist['win_cost']})
+        if cost_dist['fail_cost'] > 0: cost_arr.append({"name": "Fail Cost", "value": cost_dist['fail_cost']})
+        if cost_dist['general_cost'] > 0: cost_arr.append({"name": "General Spend", "value": cost_dist['general_cost']})
 
-        # Pagination
-        total_rec = len(filtered_rows)
-        paged_data = filtered_rows[offset : offset + limit]
+        total_rec = len(filtered)
+        paged_data = filtered[offset : offset + limit]
         proc_logs = []
-        
         for r in paged_data:
             d = r['parsed']
-            u = d.get('userID') or d.get('uuid') or "Guest"
-            dt = []
-            if d.get('coin_spent'): dt.append(f"💸 -{d['coin_spent']}")
-            if d.get('coin_balance'): dt.append(f"💰 {d['coin_balance']}")
-            
+            details = []
+            c_spent = d.get('coin_spent') or d.get('cost') or d.get('priceSpendLevel')
+            if c_spent: details.append(f"💸 -{c_spent}")
+            bal = d.get('coin_balance') or d.get('current_coin')
+            if bal: details.append(f"💰 {bal}")
             for k,v in d.items():
-                if ('booster' in k or 'revive' in k) and int(v) > 0:
-                    clean = k.replace('booster_', '').replace('revive_', '') 
-                    dt.append(f"⚡ {clean} x{v}")
+                if ('booster' in k or 'revive' in k) and int(v)>0: details.append(f"⚡ {k.replace('booster_','')} x{v}")
             
             proc_logs.append({
                 "time": r['created_at'].strftime('%H:%M:%S %d/%m'),
-                "user_id": str(u)[:15]+"..",
+                "user_id": str(d.get('userID') or d.get('uuid') or "Guest")[:15]+"..",
                 "event_name": r['event_name'],
-                "coin_spent": d.get('coin_spent', 0),
-                "item_name": " | ".join(dt) if dt else "-"
+                "coin_spent": int(c_spent or 0),
+                "item_name": " | ".join(details) if details else "-"
             })
 
-        return jsonify({
-            "success": True,
-            "metrics": final_metrics, "funnel": funnel, "booster_usage": b_list, 
-            "cost_distribution": cost_arr,
-            "logs": { "data": proc_logs, "pagination": { "current": page, "total_pages": (total_rec+limit-1)//limit, "total_records": total_rec } }
-        })
+        real_plays = metrics['win'] + metrics['fail']
+        if real_plays == 0: real_plays = metrics['start']
+
+        safe_response["metrics"] = {
+            "total_plays": real_plays,
+            "win_rate": round((metrics['win']/real_plays)*100, 1) if real_plays else 0,
+            "arpu": sum(x['revenue'] for x in b_list),
+            "avg_balance": 0, "top_item": b_list[0]['item_name'] if b_list else "None"
+        }
+        safe_response["funnel"] = [
+            {"event_type":"START", "count":metrics['start'], "revenue":0},
+            {"event_type":"WIN", "count":metrics['win'], "revenue":0},
+            {"event_type":"FAIL", "count":metrics['fail'], "revenue":0}
+        ]
+        safe_response["booster_usage"] = b_list
+        safe_response["cost_distribution"] = cost_arr
+        safe_response["logs"] = {"data": proc_logs, "pagination": {"current": page, "total_pages": (total_rec+limit-1)//limit, "total_records": total_rec}}
+
+        return jsonify(safe_response)
 
     except Exception as e:
-        print(f"Level Detail Error V97: {e}")
-        return jsonify(default_resp)
+        print(f"Level Detail Error V116: {e}")
+        return jsonify(safe_response)
     finally: conn.close()
 
 @app.route("/dashboard/<int:app_id>/strategic", methods=['GET'])
@@ -1535,8 +1536,203 @@ def search_events():
     finally:
         conn.close()
 
+# API DATA CHECK (BẢNG SOI CHI TIẾT) 
+@app.route("/api/data-check/<int:app_id>", methods=['GET'])
+def get_data_check(app_id):
+    conn = get_db()
+    if not conn: return jsonify({"success": False}), 500
+    
+    start_date = parse_date_param(request.args.get('start_date'))
+    end_date = parse_date_param(request.args.get('end_date'))
+
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # 1. LẤY TOÀN BỘ LOG (Vẫn giữ logic quét toàn bộ để không sót)
+        where = "WHERE app_id = %s"; 
+        params = [app_id]
+        
+        if start_date: where += " AND created_at >= %s"; params.append(start_date + " 00:00:00")
+        if end_date: where += " AND created_at <= %s"; params.append(end_date + " 23:59:59")
+        
+        print(f"🔍 DataCheck V115: Deep Scanning App {app_id}...")
+        cur.execute(f"SELECT event_name, event_json FROM event_logs {where}", tuple(params))
+        rows = cur.fetchall()
+        print(f"   -> Fetched {len(rows)} raw logs. Analyzing candidates...")
+
+        # 2. XỬ LÝ
+        stats = {} 
+        start_set = set(["missionStart", "missionStart_Daily", "level_start", "level_loading_start", "level_first_start"])
+        win_set = set(["missionComplete", "missionComplete_Daily", "level_win", "level_first_end", "missionComplete_WeeklyQuestTutor"])
+        fail_set = set(["missionFail", "missionFail_Daily", "level_fail", "level_lose"])
+
+        import re
+
+        for r in rows:
+            json_str = r['event_json']
+            data = universal_flatten(json_str)
+            
+            # [LOGIC V115 - THU THẬP TẤT CẢ ỨNG VIÊN]
+            candidates = []
+            
+            # List các key có thể chứa số Level
+            keys_to_check = ['levelID', 'level_display', 'missionID', 'dayChallenge']
+            for k in keys_to_check:
+                val = data.get(k)
+                if val and str(val).isdigit():
+                    candidates.append(int(val))
+            
+            # Nếu không tìm thấy trong key, dùng Regex "khoan bê tông" (Fallback)
+            if not candidates:
+                match = re.search(r'(?:levelID|level_display|missionID)[^0-9]{1,10}(\d+)', json_str)
+                if match:
+                    candidates.append(int(match.group(1)))
+            
+            # [QUAN TRỌNG] Lấy số LỚN NHẤT tìm được trong dòng log này
+            # Ví dụ: {"levelID": 1, "missionID": 201} -> Lấy 201
+            if not candidates: continue
+            lvl_num = max(candidates)
+            
+            # Bỏ qua level 0 hoặc số quá lớn vô lý (nếu có lỗi parse)
+            if lvl_num <= 0 or lvl_num > 100000: continue
+            
+            lvl = str(lvl_num) # Chuyển lại thành string để làm key
+
+            # Init stats
+            if lvl not in stats:
+                stats[lvl] = {
+                    "start": 0, "win": 0, "fail": 0,
+                    "users_start": set(), "users_win": set(),
+                    "coin_spent": 0,
+                    "timeplay_sum": 0.0, "timeplay_count": 0,
+                    "fail_prog_sum": 0.0, "fail_prog_count": 0,
+                    "boosters": {}
+                }
+            
+            s = stats[lvl]
+            evt = r['event_name']
+            uid = data.get('userID') or data.get('uuid') or "Guest"
+
+            # Logic Aggregation (Giữ nguyên)
+            if evt in start_set:
+                s['start'] += 1
+                s['users_start'].add(uid)
+            elif evt in win_set:
+                s['win'] += 1
+                s['users_win'].add(uid)
+                tm = data.get('timeplay') or data.get('timePlay')
+                if tm:
+                    try: 
+                        val = float(tm)
+                        if val > 0 and val < 7200: 
+                            s['timeplay_sum'] += val
+                            s['timeplay_count'] += 1
+                    except: pass
+            elif evt in fail_set:
+                s['fail'] += 1
+                try:
+                    total = float(data.get('objectTotal', 0))
+                    unsolve = float(data.get('objectUnsolve', 0))
+                    if total > 0:
+                        prog = ((total - unsolve) / total) * 100
+                        s['fail_prog_sum'] += prog
+                        s['fail_prog_count'] += 1
+                except: pass
+
+            money = int(data.get('coin_spent') or data.get('cost') or data.get('priceSpendLevel') or 0)
+            if money > 0: s['coin_spent'] += money
+
+            for k, v in data.items():
+                if ('booster' in k or 'revive' in k) and str(v).isdigit() and int(v) > 0:
+                    clean = k.replace('booster_', '').replace('revive_', '')
+                    s['boosters'][clean] = s['boosters'].get(clean, 0) + int(v)
+
+        # 4. TẠO REPORT
+        report = []
+        for lvl, s in stats.items():
+            u_win = len(s['users_win'])
+            sort_val = int(lvl)
+
+            avg_time = round(s['timeplay_sum'] / s['timeplay_count'], 1) if s['timeplay_count'] else 0
+            avg_fail_prog = round(s['fail_prog_sum'] / s['fail_prog_count'], 1) if s['fail_prog_count'] else None
+            avg_retry = round(s['start'] / u_win, 2) if u_win > 0 else 0
+
+            report.append({
+                "level": lvl,
+                "_sort": sort_val,
+                "difficulty": "Normal",
+                "user_complete": u_win,
+                "win_rate": round((s['win']/s['start'])*100, 1) if s['start'] else 0,
+                "play_count_avg": avg_retry,
+                "avg_timeplay": avg_time,
+                "avg_fail_process": avg_fail_prog,
+                "coin_spent": s['coin_spent'],
+                "boosters": s['boosters']
+            })
+            
+        report.sort(key=lambda x: x['_sort'])
+        
+        print(f"   -> Max Level Found: {report[-1]['level'] if report else 'None'}")
+        print(f"   -> Processed {len(report)} unique levels.")
+
+        return jsonify({"success": True, "data": report})
+
+    except Exception as e:
+        print(f"Data Check Error V115: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally: conn.close()
+
+# API GET EVENT DICTIONARY (SETTINGS TAB)
+@app.route("/api/events/dictionary/<int:app_id>", methods=['GET'])
+def get_event_dictionary(app_id):
+    conn = get_db()
+    if not conn: return jsonify({})
+    
+    try:
+        cur = conn.cursor()
+        # Chỉ lấy tên event duy nhất
+        cur.execute("SELECT DISTINCT event_name FROM event_logs WHERE app_id = %s ORDER BY event_name", (app_id,))
+        rows = cur.fetchall()
+        
+        events = [r[0] for r in rows]
+        
+        # Logic phân loại thủ công
+        groups = {
+            "Progression 🎯": [], # Level, Mission...
+            "Economy & IAP 💎": [], # Coin, Gem, Shop, Purchase...
+            "System & Tech ⚙️": [], # Login, Loading, Error...
+            "Ads & Rewards 🎬": [], # Ad, Reward...
+            "Others 📦": []         # Còn lại
+        }
+
+        for e in events:
+            low = e.lower()
+            if any(x in low for x in ['level', 'mission', 'quest', 'stage', 'checkpoint', 'tutorial', 'win', 'fail', 'lose', 'complete', 'start']):
+                groups["Progression 🎯"].append(e)
+            elif any(x in low for x in ['iap', 'purchase', 'coin', 'gold', 'gem', 'money', 'shop', 'buy', 'spend', 'cost', 'price']):
+                groups["Economy & IAP 💎"].append(e)
+            elif any(x in low for x in ['ad_', 'ads', 'reward', 'bonus']):
+                groups["Ads & Rewards 🎬"].append(e)
+            elif any(x in low for x in ['login', 'session', 'load', 'init', 'install', 'update', 'error', 'ping']):
+                groups["System & Tech ⚙️"].append(e)
+            else:
+                groups["Others 📦"].append(e)
+
+        # Xóa các nhóm rỗng để đỡ rối
+        final_groups = {k: v for k, v in groups.items() if v}
+        
+        return jsonify({
+            "success": True, 
+            "total_count": len(events),
+            "groups": final_groups
+        })
+
+    except Exception as e:
+        print(f"Error Event Dict: {e}")
+        return jsonify({})
+    finally: conn.close()
+
 if __name__ == '__main__':
-    # --- [V105] CLEANUP ZOMBIE JOBS ON STARTUP ---
     # Tự động đánh dấu Failed cho các job đang treo do server restart
     try:
         conn = get_db()
